@@ -1,0 +1,95 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --color-bg: #020c16;
+  --color-bg-elev: #030f1a;
+  --color-border-dim: #0a2828;
+  --color-text: #c5dfd4;
+  --color-text-dim: #1a3a30;
+  --color-text-soft: #2a5a40;
+  --color-accent: #00ffc4;
+  --color-accent-2: #0f4a3a;
+  --color-amber: #ff9900;
+  --color-purple: #aa88ff;
+  --color-blue: #4499ff;
+  --color-pink: #ff4488;
+  --color-gold: #ffb040;
+  --color-violet: #a855f7;
+
+  --font-mono: ui-monospace, "JetBrains Mono", "Courier New", monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto;
+}
+
+:root,
+html,
+body {
+  background: #020c16;
+  color: #c5dfd4;
+  font-family: var(--font-mono);
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+  /* Critical fix: disable scroll anchoring so DOM updates from sim
+     don't force the page back to where it was anchored.
+     This is the root cause of the "scroll back to bottom" bug. */
+  overflow-anchor: none;
+  scroll-behavior: auto;
+  overscroll-behavior-y: contain;
+}
+
+#root {
+  min-height: 100%;
+  background: #020c16;
+}
+
+/* All children inherit no scroll anchoring as well */
+*, *::before, *::after {
+  overflow-anchor: none;
+}
+
+/* High-frequency-updating panels should not affect outer layout */
+.metric-card {
+  contain: layout paint;
+}
+
+/* Custom scrollbar for terminal feel */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #020c16; }
+::-webkit-scrollbar-thumb {
+  background: #0a2828;
+  border-radius: 1px;
+}
+::-webkit-scrollbar-thumb:hover { background: #0f4a3a; }
+
+button {
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+select, input {
+  font-family: var(--font-mono);
+}
+
+/* Fade-in for newly arriving cards */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 200ms ease-out; }
+
+/* Mobile drawer */
+.mobile-drawer {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 12, 22, 0.94);
+  z-index: 50;
+  overflow-y: auto;
+  padding: 14px;
+}

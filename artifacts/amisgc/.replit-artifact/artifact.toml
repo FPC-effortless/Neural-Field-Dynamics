@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "AMISGC"
+version = "1.0.0"
+id = "artifacts/amisgc"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22103
+
+[services.development]
+run = "pnpm --filter @workspace/amisgc run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/amisgc", "run", "build" ]
+publicDir = "artifacts/amisgc/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22103"
+BASE_PATH = "/"
