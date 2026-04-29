@@ -47,6 +47,7 @@ export interface Neuron {
   b: number;
   a: number;
   a_prev: number;
+  a_slow: number;
   epsilon: number;
   epsilon_dd: number;
 
@@ -133,6 +134,15 @@ export interface SimState {
   networkSbody: number;
   networkCtrl: number;
   phaseRegion: string;
+  // v12 revision — soft attractor diagnostics
+  networkPU: number;        // predictive usefulness MI(C ; future input)
+  networkH_C: number;       // participation entropy of softmax C distribution
+  existenceGate: 0 | 1;     // 1 iff Φ>0.05 ∧ PU>0.1 ∧ S_C>0.1
+  gateStreak: number;       // ticks the gate has been continuously open
+  failureReason: string;    // empty when gate is open
+  // Buffers used to estimate networkPU (kept on SimState so simTick can update them)
+  pu_C_history?: Array<{ t: number; C_index: number }>;
+  pu_env_history?: Array<{ t: number; envBit: number }>;
 
   nb: Record<string, NormBuffer>;
   firingBuffer: Array<{ count: number; envBit: number }>;
@@ -255,4 +265,10 @@ export interface Stats {
   exp_phiPhase: boolean;
   phaseRegion: string;
   attractorCount: number;
+  // v12 revision — exposed in stats for the dashboard
+  networkPU: number;
+  networkH_C: number;
+  existenceGate: 0 | 1;
+  gateStreak: number;
+  failureReason: string;
 }

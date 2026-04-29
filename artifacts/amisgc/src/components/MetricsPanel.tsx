@@ -37,8 +37,34 @@ export const MetricsPanel = memo(function MetricsPanel({
     ] as Array<[string, number, string]>;
   }, [stats]);
 
+  const gate = stats?.existenceGate ?? 0;
+  const gateOpen = gate === 1;
+  const gateColor = gateOpen ? "#00ffc4" : "#ff4477";
+  const gateLabel = gateOpen ? "GATE OPEN" : "NO-GO";
+  const gateStreak = stats?.gateStreak ?? 0;
+  const reason = stats?.failureReason ?? "";
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2">
+      {/* Existence Gate */}
+      <Panel title="EXISTENCE GATE · Φ·PU·S_C" accent={gateColor}>
+        <div className="flex items-center justify-between mb-1">
+          <span style={{ fontSize: 14, color: gateColor, letterSpacing: 2, fontWeight: 700 }}>
+            {gateLabel}
+          </span>
+          <Pill color={gateColor}>STREAK {gateStreak}</Pill>
+        </div>
+        <MR label="Φ > 0.05" value={fmt(stats?.networkPhi)} color={(stats?.networkPhi ?? 0) > 0.05 ? "#00ffc4" : "#ff4477"} />
+        <MR label="PU > 0.10" value={fmt(stats?.networkPU)} color={(stats?.networkPU ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
+        <MR label="S_C > 0.10" value={fmt(stats?.networkSC)} color={(stats?.networkSC ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
+        <MR label="H_C" value={fmt(stats?.networkH_C)} color="#aa88ff" />
+        {reason ? (
+          <div style={{ fontSize: 7, color: "#ff4477", marginTop: 4, letterSpacing: 1 }}>
+            ✗ {reason}
+          </div>
+        ) : null}
+      </Panel>
+
       {/* Phase Region */}
       <Panel title="PHASE REGION" accent={phaseColor}>
         <div style={{ fontSize: 14, color: phaseColor, letterSpacing: 2, marginBottom: 4 }}>

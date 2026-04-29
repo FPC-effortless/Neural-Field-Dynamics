@@ -312,6 +312,330 @@ router.get("/runs/:id/stream", (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-sweep — serial cartesian product over a small set of ranges.
+// Tracks the best (highest gateStreak) configuration seen so far.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SweepCombo {
+  index: number;
+  params: Record<string, number | boolean | string>;
+  status: "pending" | "running" | "completed" | "skipped";
+  gateOpened: boolean;
+  gateStreak: number;
+  finalPhi: number;
+  finalSC: number;
+  finalPU: number;
+  ticksDone: number;
+  runId: string | null;
+}
+
+interface SweepRecord {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled";
+  createdAt: number;
+  completedAt: number | null;
+  ticksPerCombo: number;
+  scale: 81 | 810 | 81000;
+  combos: SweepCombo[];
+  currentIndex: number;
+  bestIndex: number;
+  cancelled: boolean;
+  subscribers: Set<Response>;
+}
+
+const sweeps = new Map<string, SweepRecord>();
+let nextSweepId = 1;
+const MAX_SWEEPS = 10;
+
+function broadcastSweep(s: SweepRecord, event: string, data: unknown): void {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const sub of s.subscribers) {
+    try {
+      sub.write(payload);
+    } catch {
+      s.subscribers.delete(sub);
+    }
+  }
+}
+
+function pruneSweeps(): void {
+  if (sweeps.size <= MAX_SWEEPS) return;
+  const sortable = [...sweeps.values()].sort((a, b) => a.createdAt - b.createdAt);
+  for (const s of sortable) {
+    if (sweeps.size <= MAX_SWEEPS) break;
+    if (s.status === "running" || s.status === "pending") continue;
+    sweeps.delete(s.id);
+  }
+}
+
+function cartesian(
+  ranges: Record<string, number[]>
+): Array<Record<string, number>> {
+  const keys = Object.keys(ranges);
+  if (keys.length === 0) return [{}];
+  let acc: Array<Record<string, number>> = [{}];
+  for (const k of keys) {
+    const next: Array<Record<string, number>> = [];
+    for (const a of acc) {
+      for (const v of ranges[k] as number[]) next.push({ ...a, [k]: v });
+    }
+    acc = next;
+  }
+  return acc;
+}
+
+function serializeSweep(s: SweepRecord) {
+  return {
+    id: s.id,
+    status: s.status,
+    createdAt: s.createdAt,
+    completedAt: s.completedAt,
+    ticksPerCombo: s.ticksPerCombo,
+    scale: s.scale,
+    currentIndex: s.currentIndex,
+    bestIndex: s.bestIndex,
+    total: s.combos.length,
+    combos: s.combos,
+  };
+}
+
+async function runSweepCombo(
+  s: SweepRecord,
+  combo: SweepCombo
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (s.cancelled) {
+      combo.status = "skipped";
+      resolve();
+      return;
+    }
+    combo.status = "running";
+    broadcastSweep(s, "combo_start", { sweepId: s.id, combo });
+
+    const id = `r${nextId++}`;
+    const record: RunRecord = {
+      id,
+      experimentId: `sweep:${s.id}:${combo.index}`,
+      scale: s.scale,
+      status: "pending",
+      createdAt: Date.now(),
+      startedAt: null,
+      completedAt: null,
+      ticks: s.ticksPerCombo,
+      ticksDone: 0,
+      latestStats: null,
+      result: null,
+      arcResult: null,
+      error: null,
+      subscribers: new Set(),
+      history: [],
+      cancel: () => undefined,
+    };
+    runs.set(id, record);
+    pruneRuns();
+    combo.runId = id;
+
+    const handle = startRun({
+      scale: s.scale,
+      ticks: s.ticksPerCombo,
+      customParams: combo.params as Record<string, never>,
+      onStart: (info) => {
+        record.start = info;
+        record.status = "running";
+        record.startedAt = Date.now();
+      },
+      onSample: (e: RunSampleEvent) => {
+        record.ticksDone = e.t;
+        record.latestStats = e.stats;
+        combo.ticksDone = e.t;
+        combo.gateStreak = Math.max(combo.gateStreak, e.stats.gateStreak ?? 0);
+        if (e.stats.existenceGate === 1) combo.gateOpened = true;
+        combo.finalPhi = e.stats.networkPhi;
+        combo.finalSC = e.stats.networkSC;
+        combo.finalPU = e.stats.networkPU ?? 0;
+        if (record.history.length === 0 || e.t - (record.history.at(-1)?.t ?? 0) >= 200) {
+          record.history.push({ t: e.t, stats: e.stats });
+          if (record.history.length > MAX_HISTORY) record.history.shift();
+        }
+        if (e.t % 1000 === 0)
+          broadcastSweep(s, "combo_progress", { sweepId: s.id, combo });
+      },
+      onPhase: () => undefined,
+      onComplete: (e: RunCompleteEvent) => {
+        record.result = e;
+        record.passed = e.passed;
+        record.metric = e.metric;
+        record.measured = e.measured;
+        record.target = e.target;
+        record.completedAt = Date.now();
+        record.status = "completed";
+        combo.status = "completed";
+        // Update best by gateStreak (tiebreaker: higher Φ then higher PU)
+        const cur = s.combos[s.bestIndex];
+        const better =
+          !cur ||
+          combo.gateStreak > cur.gateStreak ||
+          (combo.gateStreak === cur.gateStreak && combo.finalPhi > cur.finalPhi) ||
+          (combo.gateStreak === cur.gateStreak &&
+            combo.finalPhi === cur.finalPhi &&
+            combo.finalPU > cur.finalPU);
+        if (better) s.bestIndex = combo.index;
+        broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
+        resolve();
+      },
+      onError: (err) => {
+        record.status = "error";
+        record.error = err.message;
+        record.completedAt = Date.now();
+        combo.status = "completed";
+        broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
+        resolve();
+      },
+    });
+    record.cancel = () => handle.cancel();
+    handle.promise.catch(() => undefined);
+  });
+}
+
+router.post("/sweeps", (req, res) => {
+  const body = (req.body ?? {}) as {
+    ranges?: Record<string, number[]>;
+    ticksPerCombo?: number;
+    scale?: 81 | 810 | 81000;
+  };
+  // Default sweep: hunt the soft attractor sweet spot.
+  const ranges: Record<string, number[]> = body.ranges ?? {
+    TAU_ATT: [0.4, 0.7, 1.0],
+    GAMMA_GLOBAL: [0.5, 1.0, 1.5],
+    BETA_ENTROPY: [0.1, 0.3],
+  };
+  const ticksPerCombo = Math.min(Math.max(body.ticksPerCombo ?? 2500, 500), 20000);
+  const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const grid = cartesian(ranges);
+  if (grid.length === 0 || grid.length > 64) {
+    res.status(400).json({ error: "ranges must produce 1..64 combinations" });
+    return;
+  }
+  const id = `s${nextSweepId++}`;
+  const sweep: SweepRecord = {
+    id,
+    status: "pending",
+    createdAt: Date.now(),
+    completedAt: null,
+    ticksPerCombo,
+    scale,
+    combos: grid.map((p, i) => ({
+      index: i,
+      params: { ATTN_MODE: "soft", USE_BOTTLENECK: false, ...p },
+      status: "pending",
+      gateOpened: false,
+      gateStreak: 0,
+      finalPhi: 0,
+      finalSC: 0,
+      finalPU: 0,
+      ticksDone: 0,
+      runId: null,
+    })),
+    currentIndex: 0,
+    bestIndex: 0,
+    cancelled: false,
+    subscribers: new Set(),
+  };
+  sweeps.set(id, sweep);
+  pruneSweeps();
+
+  // Kick off serial execution
+  (async () => {
+    sweep.status = "running";
+    broadcastSweep(sweep, "sweep_start", serializeSweep(sweep));
+    for (let i = 0; i < sweep.combos.length; i++) {
+      if (sweep.cancelled) break;
+      sweep.currentIndex = i;
+      await runSweepCombo(sweep, sweep.combos[i] as SweepCombo);
+    }
+    sweep.status = sweep.cancelled ? "cancelled" : "completed";
+    sweep.completedAt = Date.now();
+    broadcastSweep(sweep, "sweep_complete", serializeSweep(sweep));
+    for (const sub of sweep.subscribers) {
+      try {
+        sub.end();
+      } catch {
+        /* */
+      }
+    }
+    sweep.subscribers.clear();
+  })().catch(() => undefined);
+
+  res.status(201).json({ id, total: sweep.combos.length });
+});
+
+router.get("/sweeps", (_req, res) => {
+  res.json({
+    sweeps: [...sweeps.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(serializeSweep),
+  });
+});
+
+router.get("/sweeps/:id", (req, res) => {
+  const s = sweeps.get(req.params.id as string);
+  if (!s) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json(serializeSweep(s));
+});
+
+router.delete("/sweeps/:id", (req, res) => {
+  const s = sweeps.get(req.params.id as string);
+  if (!s) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  s.cancelled = true;
+  // Cancel current child run if any
+  const cur = s.combos[s.currentIndex];
+  if (cur?.runId) {
+    const r = runs.get(cur.runId);
+    if (r) r.cancel();
+  }
+  res.json({ id: s.id, status: "cancelled" });
+});
+
+router.get("/sweeps/:id/stream", (req, res) => {
+  const s = sweeps.get(req.params.id as string);
+  if (!s) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+  res.write(`event: snapshot\ndata: ${JSON.stringify(serializeSweep(s))}\n\n`);
+  if (s.status === "completed" || s.status === "cancelled") {
+    res.write(`event: sweep_complete\ndata: ${JSON.stringify(serializeSweep(s))}\n\n`);
+    res.end();
+    return;
+  }
+  s.subscribers.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`: heartbeat ${Date.now()}\n\n`);
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    s.subscribers.delete(res);
+  });
+});
+
 function serializeRun(r: RunRecord, full: boolean) {
   return {
     id: r.id,

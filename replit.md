@@ -4,6 +4,22 @@
 
 A full working research codebase that runs on Kaggle, the web, and the CLI, with the web UI and CLI driving the same simulation engine simultaneously.
 
+## v12 revision — soft globally coupled attractor field
+
+The previous v12 used a hard top-K bottleneck which was unable to clear the **Existence Gate** (`Φ > 0.05 ∧ PU > 0.1 ∧ S_C > 0.1` sustained ≥ 100 ticks). The current revision replaces it with a soft attractor field driven by five named parameters:
+
+| Param | Default | Role |
+| --- | --- | --- |
+| `TAU_ATT` (τ) | 0.7 | softmax temperature on attention logits |
+| `GAMMA_GLOBAL` (γ) | 1.0 | global field coupling strength |
+| `BETA_ENTROPY` (β) | 0.2 | entropy gradient pressure |
+| `DELTA_TEMPORAL` (δ) | 0.3 | temporal coherence (slow EMA pull) |
+| `NOISE_SIGMA` (σ) | 0.02 | Box-Muller exploration noise |
+
+`ALPHA_SLOW = 0.02` updates the per-neuron slow apical EMA `a_slow`, and `PU_LAG = 4` is the lag used by the Predictive Utility MI estimator. The legacy top-K path is still reachable by setting `ATTN_MODE = "topk"` for ablation experiments.
+
+Per-tick stats now expose `networkPU`, `networkH_C`, `existenceGate ∈ {0,1}`, `gateStreak`, and `failureReason`. Phase 0 (`PH0.gate`, `PH0.topk_baseline`, `PH0.no_global`, `PH0.no_temporal`) sits at the top of the experiment battery.
+
 ---
 
 ## What this project implements
@@ -98,6 +114,11 @@ Open `notebooks/amisgc_kaggle.ipynb`, allow internet access in the kernel settin
 | GET    | `/api/runs/:id`         | Full run snapshot incl. history and ARC samples     |
 | DELETE | `/api/runs/:id`         | Cancel a running job                                |
 | GET    | `/api/runs/:id/stream`  | SSE: `snapshot`, `sample`, `phase`, `arc_sample`, `complete`, `cancelled`, `error` |
+| POST   | `/api/sweeps`           | Auto-sweep — cartesian product over τ/γ/β ranges (≤ 64 combos)                     |
+| GET    | `/api/sweeps`           | List sweeps                                                                        |
+| GET    | `/api/sweeps/:id`       | Sweep snapshot incl. all combos and best index                                     |
+| DELETE | `/api/sweeps/:id`       | Cancel a running sweep                                                             |
+| GET    | `/api/sweeps/:id/stream`| SSE: `snapshot`, `sweep_start`, `combo_start`, `combo_progress`, `combo_complete`, `sweep_complete` |
 
 All run state is held in-memory in the API server (no DB required); each run owns a cooperative cancellation token wired into the simulator loop.
 

@@ -70,6 +70,7 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
       b: 0,
       a: 0.3,
       a_prev: 0.3,
+      a_slow: 0.3,
       epsilon: 0,
       epsilon_dd: 0,
       v: 0.45 + Math.random() * 0.1,
@@ -146,6 +147,13 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
     networkPhi: 0,
     networkSC: 0,
     networkAS: 0,
+    networkPU: 0,
+    networkH_C: 0,
+    existenceGate: 0,
+    gateStreak: 0,
+    failureReason: "warming up",
+    pu_C_history: [],
+    pu_env_history: [],
     networkR: 0,
     networkControl: 0,
     networkM: 0,
@@ -375,40 +383,110 @@ export function simTick(sim: SimState, ctx: SimContext): number {
   }
 
   // PASS 2: Attractor gradient
-  for (let iter = 0; iter < P.ATT_ITERS; iter++) {
-    let maxS = -Infinity;
-    for (let i = 0; i < N; i++) {
-      const ss = (ns[i] as Neuron).s_soma;
-      if (ss > maxS) maxS = ss;
+  // v12 revision — soft, globally coupled attractor field.
+  // The legacy top-K path is preserved for ablation runs (ATTN_MODE === "topk").
+  if (P.ATTN_MODE !== "topk") {
+    // Soft, globally coupled attractor (Phase 0 default).
+    for (let iter = 0; iter < P.ATT_ITERS; iter++) {
+      // softmax(a/τ) — every neuron participates
+      let maxA = -Infinity;
+      for (let i = 0; i < N; i++) {
+        const a = (ns[i] as Neuron).a;
+        if (a > maxA) maxA = a;
+      }
+      const tau = Math.max(1e-3, P.TAU_ATT);
+      const expV = new Float32Array(N);
+      let sumE = 0;
+      for (let i = 0; i < N; i++) {
+        expV[i] = Math.exp(((ns[i] as Neuron).a - maxA) / tau);
+        sumE += expV[i] as number;
+      }
+      sumE = sumE || 1e-10;
+      // Shared global field G = Σ C_i · a_i, computed from the soft distribution
+      let G = 0;
+      let HC = 0;
+      for (let i = 0; i < N; i++) {
+        const Ci = (expV[i] as number) / sumE;
+        const n = ns[i] as Neuron;
+        n.A = Ci;
+        G += Ci * n.a;
+        if (Ci > 1e-12) HC -= Ci * Math.log(Ci + 1e-8);
+      }
+      sim.networkG = G;
+      sim.networkH_C = HC;
+
+      // Apical update on the active subset (refractory neurons keep their state)
+      for (let i = 0; i < N; i++) {
+        const n = ns[i] as Neuron;
+        if (n.refractory > 0) continue;
+        const localGrad = n.a - n.b;                 // prediction error gradient
+        const globalGrad = P.GAMMA_GLOBAL * (n.a - G); // pull toward shared field
+        const slowGrad = P.DELTA_TEMPORAL * (n.a - n.a_slow); // temporal coherence
+        const selfGap = n.a - n.M;
+        // Free-energy entropy bonus pushes participation up; gradient w.r.t. a_i
+        // is approximated via -BETA_ENTROPY * (Ci - 1/N) so dominant cells are
+        // pulled down and underused cells are pulled up.
+        const entropyGrad = -P.BETA_ENTROPY * (n.A - 1 / N);
+        const dEda =
+          2 * localGrad +
+          2 * globalGrad +
+          slowGrad +
+          2 * P.LAMBDA_SELF * selfGap -
+          P.ALPHA_D * th(n.v) +
+          entropyGrad;
+        // Gaussian noise via Box–Muller (one draw per neuron per iter)
+        const u1 = Math.max(1e-9, Math.random());
+        const u2 = Math.random();
+        const gauss = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+        const noise = gauss * P.NOISE_SIGMA;
+        n.a -= P.ETA_ATT * dEda;
+        n.a += noise;
+        if (n.a > 2) n.a = 2;
+        if (n.a < -2) n.a = -2;
+        // Slow apical EMA
+        n.a_slow = (1 - P.ALPHA_SLOW) * n.a_slow + P.ALPHA_SLOW * n.a;
+        const som = n.b + P.LAMBDA_AP * n.a - P.THRESH / Math.max(n.h, 0.15);
+        n.s_soma = 1 / (1 + Math.exp(-som * 3));
+      }
     }
-    const expV = new Float32Array(N);
-    let sumE = 0;
-    for (let i = 0; i < N; i++) {
-      expV[i] = Math.exp(P.BETA_A * ((ns[i] as Neuron).s_soma - maxS));
-      sumE += expV[i] as number;
-    }
-    sumE = sumE || 1e-10;
-    for (let i = 0; i < N; i++) {
-      const n = ns[i] as Neuron;
-      if (n.refractory > 0) continue;
-      n.A = (expV[i] as number) / sumE;
-      const err = n.b - n.a;
-      const selfGap = n.a - n.M;
-      const dEda =
-        -2 * err +
-        2 * P.LAMBDA_SELF * selfGap -
-        P.ALPHA_D * th(n.v) -
-        P.BETA_A * (n.A - 1 / N);
-      n.a -= P.ETA_ATT * dEda;
-      if (n.a > 2) n.a = 2;
-      if (n.a < -2) n.a = -2;
-      const som = n.b + P.LAMBDA_AP * n.a - P.THRESH / Math.max(n.h, 0.15);
-      n.s_soma = 1 / (1 + Math.exp(-som * 3));
+  } else {
+    // Legacy top-K attractor (kept for ablation experiments).
+    for (let iter = 0; iter < P.ATT_ITERS; iter++) {
+      let maxS = -Infinity;
+      for (let i = 0; i < N; i++) {
+        const ss = (ns[i] as Neuron).s_soma;
+        if (ss > maxS) maxS = ss;
+      }
+      const expV = new Float32Array(N);
+      let sumE = 0;
+      for (let i = 0; i < N; i++) {
+        expV[i] = Math.exp(P.BETA_A * ((ns[i] as Neuron).s_soma - maxS));
+        sumE += expV[i] as number;
+      }
+      sumE = sumE || 1e-10;
+      for (let i = 0; i < N; i++) {
+        const n = ns[i] as Neuron;
+        if (n.refractory > 0) continue;
+        n.A = (expV[i] as number) / sumE;
+        const err = n.b - n.a;
+        const selfGap = n.a - n.M;
+        const dEda =
+          -2 * err +
+          2 * P.LAMBDA_SELF * selfGap -
+          P.ALPHA_D * th(n.v) -
+          P.BETA_A * (n.A - 1 / N);
+        n.a -= P.ETA_ATT * dEda;
+        if (n.a > 2) n.a = 2;
+        if (n.a < -2) n.a = -2;
+        n.a_slow = (1 - P.ALPHA_SLOW) * n.a_slow + P.ALPHA_SLOW * n.a;
+        const som = n.b + P.LAMBDA_AP * n.a - P.THRESH / Math.max(n.h, 0.15);
+        n.s_soma = 1 / (1 + Math.exp(-som * 3));
+      }
     }
   }
 
   // PASS 3: Bottleneck + collapse
-  if (P.USE_BOTTLENECK) {
+  if (P.USE_BOTTLENECK || P.ATTN_MODE === "topk") {
     const attnIdx = Array.from({ length: N }, (_, i) => i).sort(
       (a, b) => (ns[b] as Neuron).A - (ns[a] as Neuron).A
     );
@@ -420,11 +498,12 @@ export function simTick(sim: SimState, ctx: SimContext): number {
       n.C = topK.has(i) ? n.A * n.a : 0;
     }
   } else {
+    // v12 revision: every neuron participates, weighted by the soft attention.
     for (let i = 0; i < N; i++) {
       const n = ns[i] as Neuron;
       if (n.refractory > 0) continue;
       n.C_prev = n.C;
-      n.C = n.a;
+      n.C = n.A * n.a;
     }
   }
 
@@ -761,6 +840,21 @@ export function simTick(sim: SimState, ctx: SimContext): number {
     }
   }
 
+  // v12 revision — buffer the global field and the env bit every tick so
+  // calcStats can compute PU = I(G_t ; envBit_{t+PU_LAG}). Sampling every
+  // tick is essential: PU_LAG (default 4) is much smaller than the periodic
+  // 50-tick block above, so buffering inside that block would never produce
+  // matching (t, t+lag) pairs.
+  {
+    const puCh = sim.pu_C_history!;
+    const puEnv = sim.pu_env_history!;
+    puCh.push({ t, C_index: sim.networkG });
+    puEnv.push({ t, envBit });
+    const CAP = 600;
+    if (puCh.length > CAP) puCh.shift();
+    if (puEnv.length > CAP) puEnv.shift();
+  }
+
   if (t % 1000 === 0) sim.networkClustering = computeClustering(ns, N);
   sim.totalPruned += pruned;
   sim.totalGrown += grown;
@@ -851,12 +945,75 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
   nbPush(nb["jemb"] as ReturnType<typeof mkNB>, J_emb);
   sim.J_emb = J_emb;
 
+  // v12 revision — compute predictive usefulness PU = I(G_t ; envBit_{t+PU_LAG})
+  // by binning the buffered global field into 3 quantile bins and pairing each
+  // sample with the env bit observed PU_LAG ticks later.
+  const puCh = sim.pu_C_history ?? [];
+  const puEnv = sim.pu_env_history ?? [];
+  let PU = 0;
+  if (puCh.length >= 40 && puEnv.length >= 40) {
+    const lag = Math.max(1, P.PU_LAG);
+    const envByT = new Map<number, number>();
+    for (const e of puEnv) envByT.set(e.t, e.envBit);
+    const pairs: Array<{ g: number; e: number }> = [];
+    for (const c of puCh) {
+      const e = envByT.get(c.t + lag);
+      if (e !== undefined) pairs.push({ g: c.C_index, e });
+    }
+    if (pairs.length >= 30) {
+      const sortedG = [...pairs].map((p) => p.g).sort((a, b) => a - b);
+      const q1 = sortedG[Math.floor(sortedG.length / 3)] as number;
+      const q2 = sortedG[Math.floor((sortedG.length * 2) / 3)] as number;
+      const bin = (g: number) => (g <= q1 ? 0 : g <= q2 ? 1 : 2);
+      const joint = new Map<string, number>();
+      const pg = [0, 0, 0];
+      const pe = [0, 0];
+      for (const p of pairs) {
+        const b = bin(p.g);
+        const k = `${b}|${p.e}`;
+        joint.set(k, (joint.get(k) ?? 0) + 1);
+        pg[b] = (pg[b] as number) + 1;
+        pe[p.e] = (pe[p.e] as number) + 1;
+      }
+      const total = pairs.length;
+      let mi = 0;
+      for (const [k, n] of joint) {
+        const [bi, ei] = k.split("|").map(Number) as [number, number];
+        const pj = n / total;
+        const pgv = (pg[bi] as number) / total;
+        const pev = (pe[ei] as number) / total;
+        if (pj > 0 && pgv > 0 && pev > 0)
+          mi += pj * Math.log2(pj / (pgv * pev));
+      }
+      PU = Math.max(0, mi);
+    }
+  }
+  sim.networkPU = PU;
+  // Existence Gate: Φ > 0.05 ∧ PU > 0.1 ∧ S_C > 0.1
+  const gateOpen =
+    sim.networkPhi > 0.05 && sim.networkPU > 0.1 && sim.networkSC > 0.1;
+  if (gateOpen) {
+    sim.existenceGate = 1;
+    sim.gateStreak += 1;
+    sim.failureReason = "";
+  } else {
+    sim.existenceGate = 0;
+    sim.gateStreak = 0;
+    if (!(sim.networkPhi > 0.05)) sim.failureReason = "Φ below gate";
+    else if (!(sim.networkPU > 0.1)) sim.failureReason = "PU below gate";
+    else if (!(sim.networkSC > 0.1)) sim.failureReason = "S_C below gate";
+    else sim.failureReason = "Gate not met";
+  }
+
   let phaseRegion = "DISORDERED";
   if (nPhi > 0.5 && nSC < 0.3) phaseRegion = "ATTENTIVE";
   if (J_score > 0.4) phaseRegion = "PREDICTIVE";
   if (nPhi > 0.5 && nSC > 0.5) phaseRegion = "CONSCIOUS";
   if (J_star > 0.3 && nPhi > 0.4 && nSC > 0.4) phaseRegion = "CONSCIOUS";
   if (J_emb > 0.5 && sim.networkCtrl > 0.5) phaseRegion = "EMBODIED";
+  // v12 revision: if the existence gate is closed, no cognitive labels are
+  // permitted regardless of any composite scores.
+  if (sim.existenceGate === 0 && sim.t > 1000) phaseRegion = "NO-GO";
   sim.phaseRegion = phaseRegion;
   if (phaseRegion === "CONSCIOUS" && sim.phaseTimeCOG < 0)
     sim.phaseTimeCOG = sim.t;
@@ -964,6 +1121,11 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     exp_phiPhase: sim.exp_phiPhase,
     phaseRegion,
     attractorCount: sim.attractorLibrary.length,
+    networkPU: sim.networkPU,
+    networkH_C: sim.networkH_C,
+    existenceGate: sim.existenceGate,
+    gateStreak: sim.gateStreak,
+    failureReason: sim.failureReason,
   };
 }
 

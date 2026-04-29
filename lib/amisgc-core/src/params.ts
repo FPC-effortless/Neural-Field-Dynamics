@@ -80,6 +80,16 @@ export interface Params {
   BODY_ENERGY_TARGET: number;
 
   USE_BOTTLENECK: boolean;
+
+  // v12 revision — soft globally coupled attractor field
+  ATTN_MODE: "soft" | "topk";
+  TAU_ATT: number;        // soft-attention temperature
+  GAMMA_GLOBAL: number;   // global coupling strength
+  BETA_ENTROPY: number;   // entropy regularisation weight on the attractor
+  DELTA_TEMPORAL: number; // temporal coherence pull toward a_slow
+  NOISE_SIGMA: number;    // gaussian noise on the apical update
+  ALPHA_SLOW: number;     // EMA rate for the slow apical state
+  PU_LAG: number;         // future-input lag (in ticks) used for PU estimate
 }
 
 export function defaultParams(scale: 81 | 810 | 81000 = 81): Params {
@@ -173,6 +183,16 @@ export function defaultParams(scale: 81 | 810 | 81000 = 81): Params {
     BODY_HEALTH_TARGET: 0.8,
     BODY_ENERGY_TARGET: 0.7,
 
-    USE_BOTTLENECK: true,
+    // v12 revision: soft attention is the default; legacy top-k is opt-in
+    USE_BOTTLENECK: false,
+
+    ATTN_MODE: "soft",
+    TAU_ATT: 0.7,
+    GAMMA_GLOBAL: 1.0,
+    BETA_ENTROPY: 0.2,
+    DELTA_TEMPORAL: 0.3,
+    NOISE_SIGMA: 0.02,
+    ALPHA_SLOW: 0.02,
+    PU_LAG: 4,
   };
 }

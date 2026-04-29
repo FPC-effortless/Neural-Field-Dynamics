@@ -551,6 +551,64 @@ const PHASE_12: ExperimentSpec[] = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PHASE 0 — v12 revision: prove the soft attractor field can clear the gate
+// ─────────────────────────────────────────────────────────────────────────────
+const PHASE_0: ExperimentSpec[] = [
+  {
+    id: "PH0.gate",
+    name: "PH0 Existence Gate (canonical soft field)",
+    phase: "PH0",
+    desc: "Soft globally coupled attractor (default τ/γ/β/δ/σ). Must clear Φ>0.05 ∧ PU>0.1 ∧ S_C>0.1.",
+    params: {
+      ATTN_MODE: "soft", USE_BOTTLENECK: false,
+      TAU_ATT: 0.7, GAMMA_GLOBAL: 1.0, BETA_ENTROPY: 0.2,
+      DELTA_TEMPORAL: 0.3, NOISE_SIGMA: 0.02, ALPHA_SLOW: 0.02,
+      ALPHA_D: 0.8, LAMBDA_AP: 2.0, MAINTAIN: 1.0, B: 1,
+    },
+    hypothesis: "Existence gate opens within 4k ticks",
+    metric: "existenceGate", targetVal: 1, targetDir: 1, ticks: 6000,
+  },
+  {
+    id: "PH0.topk_baseline",
+    name: "PH0 Top-K baseline (ablation)",
+    phase: "PH0",
+    desc: "Legacy top-K bottleneck. Expected to fail the gate by S_C/PU.",
+    params: {
+      ATTN_MODE: "topk", USE_BOTTLENECK: true,
+      ALPHA_D: 0.8, LAMBDA_AP: 2.0, MAINTAIN: 1.0, B: 1,
+    },
+    hypothesis: "Gate stays closed (NO-GO)",
+    metric: "existenceGate", targetVal: 0, targetDir: -1, ticks: 6000,
+  },
+  {
+    id: "PH0.no_global",
+    name: "PH0 γ=0 (no global field)",
+    phase: "PH0",
+    desc: "Disable global coupling — should drop Φ even though S_C may rise.",
+    params: {
+      ATTN_MODE: "soft", USE_BOTTLENECK: false,
+      TAU_ATT: 0.7, GAMMA_GLOBAL: 0, BETA_ENTROPY: 0.2,
+      DELTA_TEMPORAL: 0.3, NOISE_SIGMA: 0.02, ALPHA_SLOW: 0.02,
+    },
+    hypothesis: "Φ collapses; gate closed",
+    metric: "networkPhi", targetVal: 0.05, targetDir: -1, ticks: 6000,
+  },
+  {
+    id: "PH0.no_temporal",
+    name: "PH0 δ=0 (no temporal coherence)",
+    phase: "PH0",
+    desc: "Disable slow EMA pull. Tests temporal binding contribution.",
+    params: {
+      ATTN_MODE: "soft", USE_BOTTLENECK: false,
+      TAU_ATT: 0.7, GAMMA_GLOBAL: 1.0, BETA_ENTROPY: 0.2,
+      DELTA_TEMPORAL: 0, NOISE_SIGMA: 0.02, ALPHA_SLOW: 0.02,
+    },
+    hypothesis: "Gate streak shorter; PU lower",
+    metric: "networkPU", targetVal: 0.1, targetDir: -1, ticks: 6000,
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ARC mock benchmark (final validation)
 // ─────────────────────────────────────────────────────────────────────────────
 const ARC_MOCK: ExperimentSpec[] = [
@@ -564,6 +622,7 @@ const ARC_MOCK: ExperimentSpec[] = [
 ];
 
 export const ALL_EXPERIMENTS: ExperimentSpec[] = [
+  ...PHASE_0,
   ...CORE_1,
   ...CORE_1_ABL,
   ...CORE_2,
@@ -586,6 +645,7 @@ export const ALL_EXPERIMENTS: ExperimentSpec[] = [
 ];
 
 export const PHASE_GROUPS: Array<{ phase: string; label: string; experiments: ExperimentSpec[] }> = [
+  { phase: "PH0", label: "PHASE 0 — v12 Existence Gate (soft attractor)", experiments: PHASE_0 },
   { phase: "C1", label: "CORE-1 — Attractor Formation", experiments: [...CORE_1, ...CORE_1_ABL] },
   { phase: "C2", label: "CORE-2 — Attractor Reuse", experiments: CORE_2 },
   { phase: "C2.5", label: "CORE-2.5 — Geometry", experiments: CORE_25 },

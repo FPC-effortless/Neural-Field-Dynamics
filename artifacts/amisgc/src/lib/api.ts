@@ -103,6 +103,11 @@ export interface Stats {
   exp_phiPhase: boolean;
   phaseRegion: string;
   attractorCount: number;
+  networkPU?: number;
+  networkH_C?: number;
+  existenceGate?: 0 | 1;
+  gateStreak?: number;
+  failureReason?: string;
 }
 
 export interface RunSummary {
@@ -259,5 +264,96 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
   es.addEventListener("error", () => {
     handlers.onError?.("stream error");
   });
+  return () => es.close();
+}
+
+// ─── Sweep client ────────────────────────────────────────────────────────────
+
+export interface SweepCombo {
+  index: number;
+  params: Record<string, number | boolean | string>;
+  status: "pending" | "running" | "completed" | "skipped";
+  gateOpened: boolean;
+  gateStreak: number;
+  finalPhi: number;
+  finalSC: number;
+  finalPU: number;
+  ticksDone: number;
+  runId: string | null;
+}
+
+export interface SweepDetail {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled";
+  createdAt: number;
+  completedAt: number | null;
+  ticksPerCombo: number;
+  scale: 81 | 810 | 81000;
+  currentIndex: number;
+  bestIndex: number;
+  total: number;
+  combos: SweepCombo[];
+}
+
+export interface CreateSweepRequest {
+  ranges?: Record<string, number[]>;
+  ticksPerCombo?: number;
+  scale?: 81 | 810 | 81000;
+}
+
+export const sweepApi = {
+  list: () => jsonFetch<{ sweeps: SweepDetail[] }>(`${API_PREFIX}/sweeps`),
+  get: (id: string) => jsonFetch<SweepDetail>(`${API_PREFIX}/sweeps/${id}`),
+  create: (body: CreateSweepRequest) =>
+    jsonFetch<{ id: string; total: number }>(`${API_PREFIX}/sweeps`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  cancel: (id: string) =>
+    jsonFetch<{ id: string; status: string }>(`${API_PREFIX}/sweeps/${id}`, {
+      method: "DELETE",
+    }),
+  streamUrl: (id: string) => `${API_PREFIX}/sweeps/${id}/stream`,
+};
+
+export interface SweepHandlers {
+  onSnapshot?: (s: SweepDetail) => void;
+  onComboStart?: (e: { sweepId: string; combo: SweepCombo }) => void;
+  onComboProgress?: (e: { sweepId: string; combo: SweepCombo }) => void;
+  onComboComplete?: (e: { sweepId: string; combo: SweepCombo; bestIndex: number }) => void;
+  onSweepStart?: (s: SweepDetail) => void;
+  onSweepComplete?: (s: SweepDetail) => void;
+  onError?: (msg: string) => void;
+}
+
+export function subscribeSweep(id: string, handlers: SweepHandlers): () => void {
+  const es = new EventSource(sweepApi.streamUrl(id));
+  const bind = <T,>(name: string, fn?: (data: T) => void) => {
+    if (!fn) return;
+    es.addEventListener(name, (ev: MessageEvent) => {
+      try {
+        fn(JSON.parse(ev.data) as T);
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+  bind<SweepDetail>("snapshot", handlers.onSnapshot);
+  bind<SweepDetail>("sweep_start", handlers.onSweepStart);
+  bind<{ sweepId: string; combo: SweepCombo }>("combo_start", handlers.onComboStart);
+  bind<{ sweepId: string; combo: SweepCombo }>("combo_progress", handlers.onComboProgress);
+  bind<{ sweepId: string; combo: SweepCombo; bestIndex: number }>(
+    "combo_complete",
+    handlers.onComboComplete,
+  );
+  es.addEventListener("sweep_complete", (ev: MessageEvent) => {
+    try {
+      handlers.onSweepComplete?.(JSON.parse(ev.data) as SweepDetail);
+    } catch {
+      /* ignore */
+    }
+    es.close();
+  });
+  es.addEventListener("error", () => handlers.onError?.("stream error"));
   return () => es.close();
 }

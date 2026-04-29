@@ -6,6 +6,7 @@ import { MetricsPanel } from "./components/MetricsPanel";
 import { RunsList } from "./components/RunsList";
 import { RunDetailPanel } from "./components/RunDetailPanel";
 import { Panel, Pill } from "./components/Panel";
+import { SweepPanel } from "./components/SweepPanel";
 import {
   api,
   subscribeRun,
@@ -14,7 +15,10 @@ import {
   type Stats,
   type CreateRunRequest,
 } from "./lib/api";
+import { exportRunCSV, exportRunJSON, exportRunsTable } from "./lib/exporters";
 import { PHCOL } from "./lib/colors";
+
+const SKIP_TASKS = ["COPY", "REVERSE", "ROTATE", "ALTERNATE", "NOVEL"] as const;
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -52,12 +56,16 @@ function pushSeries(prev: Record<string, number[]>, stats: Stats): Record<string
 function AppShell() {
   const [viewMode, setViewMode] = useState<ViewMode>("STATE");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sweepOpen, setSweepOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
   const [series, setSeries] = useState<Record<string, number[]>>(emptySeries());
-  const [vizRunning, setVizRunning] = useState(true);
+  // Do NOT auto-start the visualisation on load — wait for the user to press START.
+  const [vizRunning, setVizRunning] = useState(false);
   const [vizSpeed, setVizSpeed] = useState(4);
+  const [taskOverride, setTaskOverride] = useState<string | null>(null);
+  const skipIndexRef = useRef(0);
 
   const expQuery = useQuery({
     queryKey: ["experiments"],
@@ -160,9 +168,45 @@ function AppShell() {
     [cancelMutation],
   );
 
+  const handleStart = useCallback(() => {
+    setVizRunning(true);
+    if (!activeRunId) {
+      // Default canonical experiment: PH0 existence-gate run.
+      launchMutation.mutate({ experimentId: "PH0.gate", scale: 81 });
+    }
+  }, [activeRunId, launchMutation]);
+
+  const handlePause = useCallback(() => {
+    setVizRunning(false);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    if (activeRunId) cancelMutation.mutate(activeRunId);
+    setActiveRunId(null);
+    setSeries(emptySeries());
+    setVizRunning(false);
+    setTaskOverride(null);
+    skipIndexRef.current = 0;
+  }, [activeRunId, cancelMutation]);
+
+  const handleSkipTask = useCallback(() => {
+    skipIndexRef.current = (skipIndexRef.current + 1) % SKIP_TASKS.length;
+    setTaskOverride(SKIP_TASKS[skipIndexRef.current] as string);
+  }, []);
+
+  const handleExportCSV = useCallback(() => {
+    exportRunCSV(activeRun);
+  }, [activeRun]);
+  const handleExportJSON = useCallback(() => {
+    exportRunJSON(activeRun);
+  }, [activeRun]);
+  const handleExportTable = useCallback(() => {
+    exportRunsTable(runs);
+  }, [runs]);
+
   const stats = activeRun?.latestStats ?? null;
   const phaseColor = stats ? PHCOL[stats.phaseRegion] ?? "#334455" : "#334455";
-  const taskKey = stats?.taskKey ?? "COPY";
+  const taskKey = taskOverride ?? stats?.taskKey ?? "COPY";
 
   // Stable key for ExperimentPicker
   const experiments = expQuery.data?.experiments;
@@ -177,9 +221,17 @@ function AppShell() {
         phaseLabel={stats?.phaseRegion ?? "—"}
         phaseColor={phaseColor}
         running={vizRunning}
-        onToggleRun={() => setVizRunning((v) => !v)}
+        onStart={handleStart}
+        onPause={handlePause}
+        onReset={handleReset}
+        onSkipTask={handleSkipTask}
+        onExportCSV={handleExportCSV}
+        onExportJSON={handleExportJSON}
+        onExportTable={handleExportTable}
+        onOpenSweep={() => setSweepOpen(true)}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
+        canExport={!!activeRun}
       />
 
       <main className="px-2 sm:px-3 lg:px-4 py-3 max-w-[1600px] mx-auto">
@@ -250,6 +302,8 @@ function AppShell() {
 
       <Footer />
 
+      <SweepPanel open={sweepOpen} onClose={() => setSweepOpen(false)} />
+
       {drawerOpen && (
         <div className="mobile-drawer">
           <div className="flex items-center justify-between mb-3">
@@ -289,9 +343,60 @@ interface HeaderProps {
   phaseLabel: string;
   phaseColor: string;
   running: boolean;
-  onToggleRun: () => void;
+  onStart: () => void;
+  onPause: () => void;
+  onReset: () => void;
+  onSkipTask: () => void;
+  onExportCSV: () => void;
+  onExportJSON: () => void;
+  onExportTable: () => void;
+  onOpenSweep: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
+  canExport: boolean;
+}
+
+const btnBase = {
+  padding: "3px 8px",
+  fontSize: 8,
+  letterSpacing: 2,
+  borderRadius: 2,
+  fontWeight: 700 as const,
+  cursor: "pointer" as const,
+};
+
+function HeaderButton({
+  onClick,
+  color,
+  active = false,
+  disabled = false,
+  children,
+  title,
+}: {
+  onClick: () => void;
+  color: string;
+  active?: boolean;
+  disabled?: boolean;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        ...btnBase,
+        background: active ? color : "rgba(0,0,0,0.4)",
+        color: active ? "#020c16" : color,
+        border: `1px solid ${color}`,
+        opacity: disabled ? 0.35 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
 }
 
 function Header({
@@ -301,9 +406,17 @@ function Header({
   phaseLabel,
   phaseColor,
   running,
-  onToggleRun,
+  onStart,
+  onPause,
+  onReset,
+  onSkipTask,
+  onExportCSV,
+  onExportJSON,
+  onExportTable,
+  onOpenSweep,
   speed,
   onSpeedChange,
+  canExport,
 }: HeaderProps) {
   return (
     <header
@@ -316,7 +429,7 @@ function Header({
         backdropFilter: "blur(6px)",
       }}
     >
-      <div className="max-w-[1600px] mx-auto px-2 sm:px-3 py-2 flex items-center justify-between gap-2">
+      <div className="max-w-[1600px] mx-auto px-2 sm:px-3 py-2 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <span
             style={{
@@ -338,27 +451,48 @@ function Header({
             }}
             className="sm:!inline"
           >
-            v12.0 · NEURAL FIELD
+            v12.0 · SOFT FIELD
           </span>
           <Pill color={phaseColor}>{phaseLabel}</Pill>
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          <button
-            onClick={onToggleRun}
-            style={{
-              background: running ? "#00ffc4" : "rgba(0,0,0,0.4)",
-              color: running ? "#020c16" : "#00ffc4",
-              border: "1px solid #00ffc4",
-              padding: "3px 8px",
-              fontSize: 8,
-              letterSpacing: 2,
-              borderRadius: 2,
-              fontWeight: 700,
-            }}
-          >
-            {running ? "❚❚ PAUSE" : "▶ PLAY"}
-          </button>
+          {/* Sim transport */}
+          <HeaderButton onClick={onStart} color="#00ffc4" active={running} title="start simulation">
+            ▶ START
+          </HeaderButton>
+          <HeaderButton onClick={onPause} color="#ffb040" title="pause visualisation">
+            ❚❚ PAUSE
+          </HeaderButton>
+          <HeaderButton onClick={onReset} color="#ff4477" title="cancel run + clear">
+            ◈ RESET
+          </HeaderButton>
+          <HeaderButton onClick={onSkipTask} color="#aa88ff" title="cycle to next task">
+            → SKIP
+          </HeaderButton>
+
+          <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
+
+          {/* Exports */}
+          <HeaderButton onClick={onExportCSV} color="#0d7060" disabled={!canExport} title="active run history → CSV">
+            ⎘ CSV
+          </HeaderButton>
+          <HeaderButton onClick={onExportJSON} color="#0d7060" disabled={!canExport} title="active run → JSON">
+            ⎘ JSON
+          </HeaderButton>
+          <HeaderButton onClick={onExportTable} color="#0d7060" title="all runs → table CSV">
+            ⎘ TABLE
+          </HeaderButton>
+
+          <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
+
+          {/* Auto sweep */}
+          <HeaderButton onClick={onOpenSweep} color="#ffd060" title="parameter auto-sweep">
+            ⚡ AUTO SWEEP
+          </HeaderButton>
+
+          <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
+
           <select
             value={speed}
             onChange={(e) => onSpeedChange(Number(e.target.value))}
