@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel, Pill } from "./Panel";
 import {
+  baselinesApi,
   batchApi,
   subscribeBatch,
   type BatchDetail,
   type BatchItem,
   type CreateBatchRequest,
+  type DiffResponse,
   type PhaseGroup,
 } from "../lib/api";
 
@@ -62,6 +64,11 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [phaseFilter, setPhaseFilter] = useState<string>("");
   const [past, setPast] = useState<BatchDetail[]>([]);
+  const [diffWith, setDiffWith] = useState<string>("");
+  const [diffResult, setDiffResult] = useState<DiffResponse | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [savingBaseline, setSavingBaseline] = useState(false);
+  const [savedBaselineMsg, setSavedBaselineMsg] = useState<string | null>(null);
 
   // Refresh the list of past batches whenever the panel opens or a batch finishes
   useEffect(() => {
@@ -137,6 +144,62 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
   const reset = () => {
     setBatch(null);
     setError(null);
+    setDiffWith("");
+    setDiffResult(null);
+    setSavedBaselineMsg(null);
+  };
+
+  // Re-run launches a fresh batch reusing the same experiment list and (by
+  // default) the same baseSeed, so the new run is byte-for-byte reproducible.
+  const rerun = async (keepSeed: boolean) => {
+    if (!batch) return;
+    setLaunching(true);
+    setError(null);
+    try {
+      const { id } = await batchApi.rerun(batch.id, { keepSeed });
+      const detail = await batchApi.get(id);
+      setBatch(detail);
+      setDiffWith("");
+      setDiffResult(null);
+      setSavedBaselineMsg(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  const saveBaseline = async () => {
+    if (!batch) return;
+    setSavingBaseline(true);
+    setSavedBaselineMsg(null);
+    try {
+      const name = window.prompt(
+        "Name this baseline (used in the leaderboard delta picker):",
+        `${batch.id} · ${new Date(batch.createdAt).toISOString().slice(0, 16)}`,
+      );
+      if (!name) return;
+      const rec = await baselinesApi.create({ batchId: batch.id, name });
+      setSavedBaselineMsg(`saved as ${rec.id} (${rec.name})`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingBaseline(false);
+    }
+  };
+
+  const runDiff = async (otherId: string) => {
+    if (!batch || !otherId) return;
+    setDiffLoading(true);
+    setDiffResult(null);
+    try {
+      const r = await batchApi.diff(batch.id, otherId);
+      setDiffResult(r);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDiffLoading(false);
+    }
   };
 
   const exportCsv = () => {
@@ -345,6 +408,18 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                   PROGRESS {batch.totalCompleted} / {batch.total} · PASSED{" "}
                   <span style={{ color: "#00ffc4" }}>{batch.totalPassed}</span> · REPEATS{" "}
                   {batch.repeats} · SCALE {batch.scale}
+                  {typeof batch.baseSeed === "number" ? (
+                    <>
+                      {" "}
+                      · SEED{" "}
+                      <span
+                        style={{ color: "#aa88ff", fontFamily: "monospace" }}
+                        title="Base seed — every repeat's PRNG seed derives from this."
+                      >
+                        {batch.baseSeed.toString(16).padStart(8, "0")}
+                      </span>
+                    </>
+                  ) : null}
                 </div>
                 <div className="flex gap-2">
                   {batch.status === "running" || batch.status === "pending" ? (
@@ -366,29 +441,37 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                     <>
                       <button
                         onClick={exportCsv}
-                        style={{
-                          background: "transparent",
-                          border: "1px solid #0d7060",
-                          color: "#0d7060",
-                          padding: "3px 10px",
-                          fontSize: 8,
-                          letterSpacing: 2,
-                          borderRadius: 2,
-                        }}
+                        style={postRunBtn("#0d7060")}
                       >
                         ⎘ CSV
                       </button>
                       <button
+                        onClick={() => rerun(true)}
+                        disabled={launching}
+                        title="Re-run with the SAME baseSeed (byte-identical replay)"
+                        style={postRunBtn("#aa88ff")}
+                      >
+                        ↻ RE-RUN (same seed)
+                      </button>
+                      <button
+                        onClick={() => rerun(false)}
+                        disabled={launching}
+                        title="Re-run with a fresh random seed (variance check)"
+                        style={postRunBtn("#9bff8a")}
+                      >
+                        ↻ RE-RUN (new seed)
+                      </button>
+                      <button
+                        onClick={saveBaseline}
+                        disabled={savingBaseline}
+                        title="Use this batch as the leaderboard's baseline reference"
+                        style={postRunBtn("#ffd060")}
+                      >
+                        ☆ SAVE AS BASELINE
+                      </button>
+                      <button
                         onClick={reset}
-                        style={{
-                          background: "transparent",
-                          border: "1px solid #ffd060",
-                          color: "#ffd060",
-                          padding: "3px 10px",
-                          fontSize: 8,
-                          letterSpacing: 2,
-                          borderRadius: 2,
-                        }}
+                        style={postRunBtn("#ffd060")}
                       >
                         ◈ NEW BATCH
                       </button>
@@ -418,12 +501,167 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
               </div>
             </Panel>
 
+            {savedBaselineMsg ? (
+              <div
+                style={{
+                  fontSize: 9,
+                  color: "#9bff8a",
+                  margin: "4px 0 8px",
+                  letterSpacing: 1,
+                }}
+              >
+                ✓ {savedBaselineMsg} — pick it in the Leaderboard's BASELINE dropdown.
+              </div>
+            ) : null}
+
+            {(batch.status === "completed" || batch.status === "cancelled" ||
+              batch.status === "interrupted") && past.length > 1 ? (
+              <Panel title="DIFF VS PRIOR BATCH" accent="#aa88ff">
+                <div className="flex items-center gap-2 flex-wrap" style={{ fontSize: 9 }}>
+                  <span style={{ color: "#0d7060", letterSpacing: 2 }}>COMPARE TO</span>
+                  <select
+                    value={diffWith}
+                    onChange={(e) => setDiffWith(e.target.value)}
+                    style={{
+                      background: "#020c16",
+                      color: "#aa88ff",
+                      border: "1px solid #5a4a8a",
+                      padding: "3px 6px",
+                      fontSize: 9,
+                    }}
+                  >
+                    <option value="">— pick a batch —</option>
+                    {past
+                      .filter((b) => b.id !== batch.id)
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.id} · {new Date(b.createdAt).toLocaleString()} · {b.total}×
+                          {b.repeats}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    onClick={() => runDiff(diffWith)}
+                    disabled={!diffWith || diffLoading}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid #aa88ff",
+                      color: "#aa88ff",
+                      padding: "3px 10px",
+                      fontSize: 9,
+                      letterSpacing: 2,
+                      borderRadius: 2,
+                      opacity: !diffWith || diffLoading ? 0.4 : 1,
+                    }}
+                  >
+                    {diffLoading ? "…" : "▶ DIFF"}
+                  </button>
+                </div>
+                {diffResult ? <DiffTable diff={diffResult} /> : null}
+              </Panel>
+            ) : null}
+
             <Panel title="ITEMS" accent="#5a4a1a">
               <BatchTable items={batch.items} />
             </Panel>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+const postRunBtn = (color: string): React.CSSProperties => ({
+  background: "transparent",
+  border: `1px solid ${color}`,
+  color,
+  padding: "3px 10px",
+  fontSize: 8,
+  letterSpacing: 2,
+  borderRadius: 2,
+  cursor: "pointer",
+});
+
+function DiffTable({ diff }: { diff: DiffResponse }) {
+  const fmtT = (ts: number) =>
+    `${new Date(ts).toLocaleDateString()} ${new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  return (
+    <div style={{ marginTop: 8, overflowX: "auto" }}>
+      <div
+        style={{
+          fontSize: 9,
+          color: "#5a4a8a",
+          marginBottom: 6,
+          fontFamily: "monospace",
+        }}
+      >
+        Δ = <strong style={{ color: "#aa88ff" }}>A({diff.aId}, {fmtT(diff.aCreatedAt)})</strong>{" "}
+        − <strong style={{ color: "#aa88ff" }}>B({diff.bId}, {fmtT(diff.bCreatedAt)})</strong>{" "}
+        · Welch's t two-sided p-value
+      </div>
+      <table
+        style={{ width: "100%", fontSize: 8, color: "#0d7060", borderCollapse: "collapse" }}
+      >
+        <thead>
+          <tr style={{ borderBottom: "1px solid #0a2828", color: "#aa88ff", letterSpacing: 1 }}>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>PHASE</th>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>EXPERIMENT</th>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>METRIC</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>A μ (n)</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>B μ (n)</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>Δ</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>p</th>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>SIGN</th>
+          </tr>
+        </thead>
+        <tbody>
+          {diff.rows.map((r) => {
+            const signColor =
+              r.sign === "better" ? "#00ffc4" : r.sign === "worse" ? "#ff4477" : "#ffd060";
+            const pTxt =
+              r.pTwoSided === null
+                ? "—"
+                : r.pTwoSided < 0.001
+                  ? "p<.001"
+                  : r.pTwoSided.toFixed(3);
+            return (
+              <tr key={r.experimentId} style={{ borderBottom: "1px solid #0a2828" }}>
+                <td style={{ padding: "3px 6px", color: "#aa88ff" }}>{r.phase}</td>
+                <td
+                  style={{
+                    padding: "3px 6px",
+                    color: "#c5dfd4",
+                    fontFamily: "monospace",
+                    maxWidth: 240,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={r.experimentId}
+                >
+                  {r.experimentName}
+                </td>
+                <td style={{ padding: "3px 6px", fontFamily: "monospace" }}>{r.metric}</td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>
+                  {r.aMean === null ? "—" : r.aMean.toFixed(3)} ({r.aN})
+                </td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>
+                  {r.bMean === null ? "—" : r.bMean.toFixed(3)} ({r.bN})
+                </td>
+                <td style={{ padding: "3px 6px", textAlign: "right", color: signColor }}>
+                  {r.delta === null
+                    ? "—"
+                    : `${r.delta > 0 ? "+" : ""}${r.delta.toFixed(3)}`}
+                </td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>{pTxt}</td>
+                <td style={{ padding: "3px 6px", color: signColor, letterSpacing: 1 }}>
+                  {r.sign ?? "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -462,7 +700,9 @@ function PastBatchTable({
                   ? "#ffb040"
                   : b.status === "cancelled"
                     ? "#ff4477"
-                    : "#0d7060";
+                    : b.status === "interrupted"
+                      ? "#ff7766"
+                      : "#0d7060";
             return (
               <tr key={b.id} style={{ borderBottom: "1px solid #0a2828" }}>
                 <td style={{ padding: "3px 6px", color: "#ffd060", fontFamily: "monospace" }}>

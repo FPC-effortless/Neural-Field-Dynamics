@@ -126,6 +126,7 @@ export interface RunSummary {
   metric?: string;
   measured?: number;
   target?: number;
+  seed?: number | null;
   error: string | null;
 }
 
@@ -168,6 +169,7 @@ export interface CreateRunRequest {
   customParams?: Record<string, number | boolean>;
   type?: "experiment" | "arc";
   arc?: { numTasks?: number; trainTicksPerTask?: number; testInputs?: number };
+  seed?: number;
 }
 
 export const api = {
@@ -180,10 +182,13 @@ export const api = {
   getRun: (id: string) =>
     jsonFetch<RunDetail>(`${API_PREFIX}/runs/${id}`),
   createRun: (body: CreateRunRequest) =>
-    jsonFetch<{ id: string; status: string; type?: string }>(`${API_PREFIX}/runs`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    jsonFetch<{ id: string; status: string; type?: string; seed?: number | null }>(
+      `${API_PREFIX}/runs`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   cancelRun: (id: string) =>
     jsonFetch<{ id: string; status: string }>(`${API_PREFIX}/runs/${id}`, {
       method: "DELETE",
@@ -339,6 +344,7 @@ export interface BatchItem {
   hypothesis: string;
   runIds: string[];
   measuredValues: number[];
+  seeds?: number[];
   passes: number;
   totalRuns: number;
   status: "pending" | "running" | "completed" | "skipped" | "error";
@@ -349,12 +355,20 @@ export interface BatchItem {
   durationMs: number;
 }
 
+export type BatchStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "interrupted";
+
 export interface BatchDetail {
   id: string;
-  status: "pending" | "running" | "completed" | "cancelled";
+  status: BatchStatus;
   scale: 81 | 810 | 81000;
   ticksPerExperiment: number | null;
   repeats: number;
+  baseSeed?: number;
   createdAt: number;
   completedAt: number | null;
   currentIndex: number;
@@ -371,6 +385,18 @@ export interface CreateBatchRequest {
   scale?: 81 | 810 | 81000;
   ticksPerExperiment?: number;
   repeats?: number;
+  seed?: number;
+}
+
+// ─── Leaderboard / notes / baselines / version / diff ────────────────────────
+
+export interface BaselineDelta {
+  baselineId: string;
+  delta: number | null;
+  pTwoSided: number | null;
+  baselineMean: number | null;
+  baselineN: number;
+  sign: "better" | "worse" | "tie" | null;
 }
 
 export interface LeaderboardRow {
@@ -386,30 +412,163 @@ export interface LeaderboardRow {
   bestMeasured: number | null;
   meanMeasured: number | null;
   stdMeasured: number | null;
+  ci95Lo: number | null;
+  ci95Hi: number | null;
   lastSeen: number;
   batchCount: number;
   hypothesis: string;
+  pinned: boolean;
+  noteText: string | null;
+  noteTags: string[];
+  baselineDelta: BaselineDelta | null;
+}
+
+export interface LeaderboardQuery {
+  phase?: string;
+  search?: string;
+  baseline?: string;
+  minRuns?: number;
+  excludeInterrupted?: boolean;
+}
+
+function buildQuery(q: LeaderboardQuery): string {
+  const sp = new URLSearchParams();
+  if (q.phase) sp.set("phase", q.phase);
+  if (q.search) sp.set("search", q.search);
+  if (q.baseline) sp.set("baseline", q.baseline);
+  if (typeof q.minRuns === "number" && q.minRuns > 0) sp.set("minRuns", String(q.minRuns));
+  if (q.excludeInterrupted) sp.set("excludeInterrupted", "1");
+  const s = sp.toString();
+  return s ? `?${s}` : "";
 }
 
 export const leaderboardApi = {
-  get: () =>
-    jsonFetch<{ rows: LeaderboardRow[]; totalBatches: number }>(
-      `${API_PREFIX}/leaderboard`,
+  get: (q: LeaderboardQuery = {}) =>
+    jsonFetch<{
+      rows: LeaderboardRow[];
+      totalBatches: number;
+      includedBatches: number;
+      baselineId?: string;
+      baselineFound?: boolean;
+    }>(`${API_PREFIX}/leaderboard${buildQuery(q)}`),
+};
+
+export interface ExperimentNote {
+  text: string;
+  tags: string[];
+  pinned: boolean;
+  updatedAt: number;
+}
+
+export const notesApi = {
+  list: () =>
+    jsonFetch<{ notes: Record<string, ExperimentNote> }>(`${API_PREFIX}/notes`),
+  put: (experimentId: string, patch: Partial<ExperimentNote>) =>
+    jsonFetch<ExperimentNote & { experimentId: string }>(
+      `${API_PREFIX}/notes/${encodeURIComponent(experimentId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(patch),
+      },
+    ),
+  remove: (experimentId: string) =>
+    jsonFetch<{ experimentId: string; removed: boolean }>(
+      `${API_PREFIX}/notes/${encodeURIComponent(experimentId)}`,
+      { method: "DELETE" },
     ),
 };
+
+export interface BaselineRecord {
+  id: string;
+  name: string;
+  batchId: string;
+  createdAt: number;
+  notes?: string;
+}
+
+export const baselinesApi = {
+  list: () =>
+    jsonFetch<{ baselines: BaselineRecord[] }>(`${API_PREFIX}/baselines`),
+  create: (body: { name?: string; batchId: string; notes?: string }) =>
+    jsonFetch<BaselineRecord>(`${API_PREFIX}/baselines`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  remove: (id: string) =>
+    jsonFetch<{ id: string; removed: boolean }>(
+      `${API_PREFIX}/baselines/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+};
+
+export interface VersionInfo {
+  version: string;
+  gitSha: string | null;
+  buildTime: string | null;
+  nodeEnv: string;
+  startedAt: number;
+  uptimeMs: number;
+  authRequired: boolean;
+}
+
+export const systemApi = {
+  version: () => jsonFetch<VersionInfo>(`${API_PREFIX}/version`),
+};
+
+export interface DiffRow {
+  experimentId: string;
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  aMean: number | null;
+  bMean: number | null;
+  aN: number;
+  bN: number;
+  delta: number | null;
+  pTwoSided: number | null;
+  sign: "better" | "worse" | "tie" | null;
+}
+
+export interface DiffResponse {
+  aId: string;
+  bId: string;
+  aCreatedAt: number;
+  bCreatedAt: number;
+  rows: DiffRow[];
+}
 
 export const batchApi = {
   list: () => jsonFetch<{ batches: BatchDetail[] }>(`${API_PREFIX}/batches`),
   get: (id: string) => jsonFetch<BatchDetail>(`${API_PREFIX}/batches/${id}`),
   create: (body: CreateBatchRequest) =>
-    jsonFetch<{ id: string; total: number; repeats: number }>(`${API_PREFIX}/batches`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    jsonFetch<{ id: string; total: number; repeats: number; baseSeed: number }>(
+      `${API_PREFIX}/batches`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   cancel: (id: string) =>
     jsonFetch<{ id: string; status: string }>(`${API_PREFIX}/batches/${id}`, {
       method: "DELETE",
     }),
+  rerun: (id: string, body: { keepSeed?: boolean; repeats?: number } = {}) =>
+    jsonFetch<{
+      id: string;
+      sourceBatchId: string;
+      total: number;
+      repeats: number;
+      baseSeed: number;
+    }>(`${API_PREFIX}/batches/${encodeURIComponent(id)}/rerun`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  diff: (a: string, b: string) =>
+    jsonFetch<DiffResponse>(
+      `${API_PREFIX}/batches/${encodeURIComponent(a)}/diff/${encodeURIComponent(b)}`,
+    ),
   streamUrl: (id: string) => `${API_PREFIX}/batches/${id}/stream`,
 };
 

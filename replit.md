@@ -126,8 +126,22 @@ Open `notebooks/amisgc_kaggle.ipynb`, allow internet access in the kernel settin
 | GET    | `/api/batches/:id`      | Batch snapshot incl. per-experiment status, mean/std measured value, pass count |
 | DELETE | `/api/batches/:id`      | Cancel a running batch |
 | GET    | `/api/batches/:id/stream`| SSE: `snapshot`, `batch_start`, `item_start`, `item_progress`, `item_complete`, `batch_complete` |
+| POST   | `/api/batches/:id/rerun` | Re-launch the same experiment list. `{ keepSeed: true }` → byte-identical replay (reuses the source `baseSeed`); `{ keepSeed: false }` → fresh random seed for a variance check |
+| GET    | `/api/batches/:a/diff/:b`| Welch's t-test per shared experiment between two batches. Returns `{ aMean, bMean, aN, bN, delta, pTwoSided, sign }` rows |
+| GET    | `/api/leaderboard`       | Aggregate view across persisted batches with `?phase=`, `?search=`, `?baseline=`, `?minRuns=`, `?excludeInterrupted=` filters. Each row carries bootstrap 95% CI, pinned/note metadata, and an optional `baselineDelta` (Welch's t vs the chosen baseline batch) |
+| GET    | `/api/notes`             | List of persistent per-experiment notes (text, tags, pinned flag) |
+| PUT    | `/api/notes/:experimentId`| Upsert a note. Any subset of `{ text, tags, pinned }` patches the existing record |
+| DELETE | `/api/notes/:experimentId`| Drop the note |
+| GET    | `/api/baselines`         | List saved baselines (named pointers to a specific batch id) |
+| POST   | `/api/baselines`         | Save a batch as a named baseline (`{ batchId, name, notes? }`) |
+| DELETE | `/api/baselines/:id`     | Remove a saved baseline |
+| GET    | `/api/version`           | `{ version, gitSha, buildTime, nodeEnv, startedAt, uptimeMs, authRequired }` for build-info / health probes |
 
-All run state is held in-memory in the API server (no DB required); each run owns a cooperative cancellation token wired into the simulator loop.
+All run state is held in-memory in the API server (no DB required); each run owns a cooperative cancellation token wired into the simulator loop. Notes and baselines persist as JSON under `artifacts/api-server/data/`.
+
+### Auth (optional)
+
+Set `AMISGC_API_TOKEN=…` in the environment to require `Authorization: Bearer <token>` on every `/api/*` route except `/api/version` (so health probes still work). With the variable unset (the default), the API is unauthenticated and `/api/version` reports `authRequired: false`.
 
 ### Run All / Batch panel
 
@@ -138,11 +152,18 @@ The header **▶ RUN ALL** button opens the experiment battery panel, with one-c
 - **Run everything** — every registered experiment, serially
 - Or pick any phase from the dropdown
 
-Each item shows its target metric, target threshold (≥ or ≤), measured mean ± std across repeats, pass count (`k/N`), tick progress, and elapsed time. Batches can be cancelled mid-run and exported to CSV when done.
+Each item shows its target metric, target threshold (≥ or ≤), measured mean ± std across repeats, pass count (`k/N`), tick progress, and elapsed time. Every batch has a `baseSeed` (shown in hex in the header); each repeat's PRNG seed derives from it via a deterministic xorshift mixer (`deriveSeed(base, itemIdx, repeatIdx)`), so identical baseSeeds reproduce identical runs. Batches can be cancelled mid-run and exported to CSV when done.
 
-Completed (and cancelled) batches are persisted to `artifacts/api-server/data/batches/<id>.json` and reloaded on API startup, so you can scroll back through past runs in the **↺ PAST BATCHES** list inside the panel and click **LOAD** to inspect any of them. Batches that were running when the API was restarted come back marked `cancelled` (their simulator handles are gone).
+Completed (and cancelled) batches are persisted to `artifacts/api-server/data/batches/<id>.json` and reloaded on API startup, so you can scroll back through past runs in the **↺ PAST BATCHES** list inside the panel and click **LOAD** to inspect any of them. Batches that were *running* when the API was killed come back marked **`interrupted`** rather than `cancelled` — they're separated in the UI so a server restart can't silently corrupt your aggregate stats. The leaderboard's `EXCLUDE INTERRUPTED` checkbox (on by default) filters them out.
 
-The **🏆 STATS** header button opens the **Leaderboard** — an aggregate view across every persisted batch. For each experiment that has been run at least once, it shows: total simulator runs, total passes, overall pass rate (colour-coded), best-ever measured value (direction-aware), mean ± std, batch count, and the timestamp it was last seen. Sortable by pass rate / total runs / phase / most recent / best measured, filterable by phase, exportable to CSV. Backed by `GET /api/leaderboard`.
+A loaded batch exposes four extra controls below `⎘ CSV`:
+
+- **↻ RE-RUN (same seed)** — replays the same experiment list with the same `baseSeed` for a deterministic A/B replay
+- **↻ RE-RUN (new seed)** — same list, fresh random seed, for a variance / robustness check
+- **☆ SAVE AS BASELINE** — registers this batch as a named baseline (POST `/api/baselines`); show up in the leaderboard's BASELINE dropdown
+- **DIFF VS PRIOR BATCH** panel — pick any other persisted batch and run a Welch's t-test per shared experiment, with sign-coded Δ and p-value columns
+
+The **🏆 STATS** header button opens the **Leaderboard** — an aggregate view across every persisted batch. Each row shows: pinned star, total simulator runs, total passes, overall pass rate (colour-coded), best-ever measured value (direction-aware), mean ± std, **bootstrap 95% CI** (n=600 resamples), pass count `k/N`, and — when a baseline is selected — **Δ vs baseline** (Welch's two-sided p-value, sign-coded). Sortable by pass rate, total runs, phase, experiment id, most recent, best measured, **CI width (tightest)**, or **Δ vs baseline**. Filterable by phase, free-text search (id / name / hypothesis, debounced 250 ms), minimum-run threshold, and an `EXCLUDE INTERRUPTED` toggle. Pinned experiments always sort to the top of any view. The 📝 / + button on each row opens an inline editor for a persistent note + comma-separated tags + pin toggle. Refresh and CSV-export buttons are in the filter bar; the CSV now also carries CI bounds, baseline delta + p-value, pin flag, note text and tags. Backed by `GET /api/leaderboard`, `*/notes/*`, `*/baselines/*`.
 
 ---
 
@@ -158,16 +179,24 @@ The **🏆 STATS** header button opens the **Leaderboard** — an aggregate view
 
 ## File map
 
-- `lib/amisgc-core/src/sim.ts` — full v12 simulator (7-pass attention, body, TD dopamine)
+- `lib/amisgc-core/src/sim.ts` — full v12 simulator (7-pass attention, body, TD dopamine), seedable via `RunOptions.seed`
+- `lib/amisgc-core/src/runner.ts` — RunHandle + cancellation + lifecycle callbacks; `RunStart` carries the `seed`
+- `lib/amisgc-core/src/stats.ts` — `partitionFinite`, `meanStd`, `bootstrapCI` (n=600), `welchT` two-sided, `stabilityCheck`, `bestMeasured` (direction-aware)
 - `lib/amisgc-core/src/experiments.ts` — every experiment spec + phase groupings
 - `lib/amisgc-core/src/arc.ts` — ARC mock benchmark
-- `lib/amisgc-core/src/runner.ts` — RunHandle + cancellation + lifecycle callbacks
-- `artifacts/api-server/src/routes/runs.ts` — REST + SSE
+- `artifacts/api-server/src/routes/runs.ts` — REST + SSE for runs / sweeps / batches, plus the leaderboard, diff, and re-run endpoints
+- `artifacts/api-server/src/routes/{notes,baselines,system}.ts` — notes, baselines, `/version` routes
+- `artifacts/api-server/src/middlewares/auth.ts` — env-gated bearer-token guard (`AMISGC_API_TOKEN`)
+- `artifacts/api-server/src/lib/{store,notesStore,baselinesStore}.ts` — JSON-on-disk persistence under `data/`
+- `artifacts/api-server/src/index.ts` — `SIGTERM` / `SIGINT` graceful shutdown that marks in-flight batches `interrupted`
 - `artifacts/amisgc/src/App.tsx` — main shell, layout, mobile drawer
+- `artifacts/amisgc/src/lib/api.ts` — typed client for every endpoint above (incl. `notesApi`, `baselinesApi`, `systemApi`, `batchApi.{diff,rerun}`, `leaderboardApi.get(query)`)
 - `artifacts/amisgc/src/components/NeuronGrid.tsx` — canvas renderer (six view modes)
 - `artifacts/amisgc/src/components/MetricsPanel.tsx` — all live metric panels
 - `artifacts/amisgc/src/components/ExperimentPicker.tsx` — battery picker + launcher
 - `artifacts/amisgc/src/components/RunsList.tsx` — live runs feed
 - `artifacts/amisgc/src/components/RunDetailPanel.tsx` — run detail + ARC samples
+- `artifacts/amisgc/src/components/BatchPanel.tsx` — battery launcher + per-batch re-run / save-as-baseline / diff modal
+- `artifacts/amisgc/src/components/LeaderboardPanel.tsx` — aggregate leaderboard with CI, baseline delta, notes, pinning, search
 - `scripts/src/amisgc-cli.ts` — terminal CLI
 - `notebooks/amisgc_kaggle.ipynb` — Kaggle notebook

@@ -12,8 +12,13 @@ import {
   type RunStart,
   type Stats,
   type ExperimentSpec,
+  bootstrapCI,
+  welchT,
+  bestMeasured as bestMeasuredCore,
 } from "@workspace/amisgc-core";
 import { runArcBenchmark, type ArcResult, type ArcSample } from "@workspace/amisgc-core";
+import { notesStore } from "../lib/notesStore.js";
+import { baselinesStore } from "../lib/baselinesStore.js";
 
 interface RunRecord {
   id: string;
@@ -35,6 +40,7 @@ interface RunRecord {
   metric?: string;
   measured?: number;
   target?: number;
+  seed?: number;
   // SSE clients listening to this run
   subscribers: Set<Response>;
   // Last 200 sampled stats for backfill
@@ -99,6 +105,7 @@ router.post("/runs", (req, res) => {
     customParams?: Record<string, number | boolean>;
     type?: "experiment" | "arc";
     arc?: { numTasks?: number; trainTicksPerTask?: number; testInputs?: number };
+    seed?: number;
   };
   const id = `r${nextId++}`;
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
@@ -195,8 +202,12 @@ router.post("/runs", (req, res) => {
     ...(body.experimentId ? { experimentId: body.experimentId } : {}),
     ticks,
     ...(body.customParams ? { customParams: body.customParams as Record<string, never> } : {}),
+    ...(typeof body.seed === "number" && Number.isFinite(body.seed)
+      ? { seed: Math.floor(body.seed) }
+      : {}),
     onStart: (info) => {
       record.start = info;
+      record.seed = info.seed;
       record.status = "running";
       record.startedAt = Date.now();
       broadcast(record, "start", info);
@@ -246,7 +257,7 @@ router.post("/runs", (req, res) => {
   // Don't await — return run id immediately
   handle.promise.catch(() => undefined);
 
-  res.status(201).json({ id, status: record.status });
+  res.status(201).json({ id, status: record.status, seed: record.seed ?? null });
 });
 
 router.get("/runs", (_req, res) => {
@@ -350,6 +361,67 @@ interface SweepRecord {
 const sweeps = new Map<string, SweepRecord>();
 let nextSweepId = 1;
 const MAX_SWEEPS = 10;
+
+// ─── Sweep disk persistence (mirrors batches) ────────────────────────────────
+const SWEEPS_DIR = join(process.cwd(), "data", "sweeps");
+try {
+  mkdirSync(SWEEPS_DIR, { recursive: true });
+} catch {
+  /* best-effort */
+}
+
+function persistSweep(s: SweepRecord): void {
+  try {
+    writeFileSync(
+      join(SWEEPS_DIR, `${s.id}.json`),
+      JSON.stringify(serializeSweep(s), null, 2),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+function loadPersistedSweeps(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(SWEEPS_DIR);
+  } catch {
+    return;
+  }
+  let maxId = 0;
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const raw = readFileSync(join(SWEEPS_DIR, file), "utf8");
+      const data = JSON.parse(raw) as ReturnType<typeof serializeSweep>;
+      const reloadStatus =
+        data.status === "running" || data.status === "pending"
+          ? "cancelled"
+          : data.status;
+      const rec: SweepRecord = {
+        id: data.id,
+        status: reloadStatus,
+        createdAt: data.createdAt,
+        completedAt: data.completedAt ?? Date.now(),
+        ticksPerCombo: data.ticksPerCombo,
+        scale: data.scale,
+        combos: data.combos,
+        currentIndex: data.currentIndex,
+        bestIndex: data.bestIndex,
+        cancelled: reloadStatus === "cancelled",
+        subscribers: new Set(),
+      };
+      sweeps.set(rec.id, rec);
+      const num = Number(rec.id.replace(/^s/, ""));
+      if (Number.isFinite(num) && num > maxId) maxId = num;
+    } catch {
+      /* skip corrupt */
+    }
+  }
+  if (maxId >= nextSweepId) nextSweepId = maxId + 1;
+}
+loadPersistedSweeps();
 
 function broadcastSweep(s: SweepRecord, event: string, data: unknown): void {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -484,6 +556,7 @@ async function runSweepCombo(
             combo.finalPhi === cur.finalPhi &&
             combo.finalPU > cur.finalPU);
         if (better) s.bestIndex = combo.index;
+        persistSweep(s);
         broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
         resolve();
       },
@@ -492,6 +565,7 @@ async function runSweepCombo(
         record.error = err.message;
         record.completedAt = Date.now();
         combo.status = "completed";
+        persistSweep(s);
         broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
         resolve();
       },
@@ -559,6 +633,7 @@ router.post("/sweeps", (req, res) => {
     }
     sweep.status = sweep.cancelled ? "cancelled" : "completed";
     sweep.completedAt = Date.now();
+    persistSweep(sweep);
     broadcastSweep(sweep, "sweep_complete", serializeSweep(sweep));
     for (const sub of sweep.subscribers) {
       try {
@@ -655,6 +730,8 @@ interface BatchItem {
   hypothesis: string;
   runIds: string[];
   measuredValues: number[];
+  // Seeds actually used for each repeat (in order). Lets us replay exactly.
+  seeds: number[];
   passes: number;
   totalRuns: number;
   status: "pending" | "running" | "completed" | "skipped" | "error";
@@ -667,10 +744,13 @@ interface BatchItem {
 
 interface BatchRecord {
   id: string;
-  status: "pending" | "running" | "completed" | "cancelled";
+  status: "pending" | "running" | "completed" | "cancelled" | "interrupted";
   scale: 81 | 810 | 81000;
   ticksPerExperiment: number | null;
   repeats: number;
+  // Base seed; per-repeat seeds derived as deriveSeed(baseSeed, item.index, r).
+  // Persisting this lets a batch be re-run byte-for-byte identically.
+  baseSeed: number;
   createdAt: number;
   completedAt: number | null;
   currentIndex: number;
@@ -680,6 +760,15 @@ interface BatchRecord {
   items: BatchItem[];
   subscribers: Set<Response>;
   cancelChild: () => void;
+}
+
+function deriveSeed(base: number, itemIndex: number, repeatIndex: number): number {
+  // Mix using xorshift-like steps so adjacent items don't share entropy.
+  let x = (base ^ ((itemIndex + 1) * 0x9E3779B1) ^ ((repeatIndex + 1) * 0x85EBCA77)) >>> 0;
+  x ^= x << 13;
+  x ^= x >>> 17;
+  x ^= x << 5;
+  return (x >>> 0) || 1;
 }
 
 const batches = new Map<string, BatchRecord>();
@@ -720,24 +809,29 @@ function loadPersistedBatches(): void {
     try {
       const raw = readFileSync(join(BATCHES_DIR, file), "utf8");
       const data = JSON.parse(raw) as ReturnType<typeof serializeBatch>;
-      // Crashed runs come back as cancelled (we no longer have their handles)
-      const status =
+      // Crashed mid-flight batches reload as "interrupted" so leaderboard /
+      // dashboard can flag them differently from user-cancelled.
+      const reloadStatus =
         data.status === "running" || data.status === "pending"
-          ? "cancelled"
+          ? "interrupted"
           : data.status;
       const rec: BatchRecord = {
         id: data.id,
-        status,
+        status: reloadStatus,
         scale: data.scale,
         ticksPerExperiment: data.ticksPerExperiment,
         repeats: data.repeats,
+        baseSeed: typeof data.baseSeed === "number" ? data.baseSeed : 0,
         createdAt: data.createdAt,
         completedAt: data.completedAt ?? Date.now(),
         currentIndex: data.currentIndex,
         totalCompleted: data.totalCompleted,
         totalPassed: data.totalPassed,
-        cancelled: status === "cancelled",
-        items: data.items,
+        cancelled: reloadStatus === "cancelled" || reloadStatus === "interrupted",
+        items: (data.items ?? []).map((it: BatchItem) => ({
+          ...it,
+          seeds: Array.isArray(it.seeds) ? it.seeds : [],
+        })),
         subscribers: new Set(),
         cancelChild: () => undefined,
       };
@@ -789,6 +883,7 @@ function serializeBatch(b: BatchRecord) {
     scale: b.scale,
     ticksPerExperiment: b.ticksPerExperiment,
     repeats: b.repeats,
+    baseSeed: b.baseSeed,
     createdAt: b.createdAt,
     completedAt: b.completedAt,
     currentIndex: b.currentIndex,
@@ -830,6 +925,8 @@ async function runBatchItem(
       item.status = "skipped";
       return;
     }
+    const seedForRun = deriveSeed(b.baseSeed, item.index, r);
+    item.seeds[r] = seedForRun;
     await new Promise<void>((resolve) => {
       const id = `r${nextId++}`;
       const ticks = b.ticksPerExperiment ?? exp.ticks;
@@ -848,6 +945,7 @@ async function runBatchItem(
         arcResult: null,
         error: null,
         hypothesis: exp.hypothesis,
+        seed: seedForRun,
         subscribers: new Set(),
         history: [],
         cancel: () => undefined,
@@ -861,8 +959,10 @@ async function runBatchItem(
         scale: b.scale,
         experimentId: exp.id,
         ticks,
+        seed: seedForRun,
         onStart: (info) => {
           record.start = info;
+          record.seed = info.seed;
           record.status = "running";
           record.startedAt = Date.now();
         },
@@ -928,6 +1028,7 @@ router.post("/batches", (req, res) => {
     scale?: 81 | 810 | 81000;
     ticksPerExperiment?: number;
     repeats?: number;
+    seed?: number;
   };
   const experiments = pickExperiments(body);
   if (experiments.length === 0) {
@@ -949,6 +1050,10 @@ router.post("/batches", (req, res) => {
       : null;
 
   const id = `b${nextBatchId++}`;
+  const baseSeed =
+    typeof body.seed === "number" && Number.isFinite(body.seed)
+      ? Math.floor(body.seed) >>> 0
+      : ((Date.now() & 0x7fffffff) ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
   const items: BatchItem[] = experiments.map((exp, i) => ({
     index: i,
     experimentId: exp.id,
@@ -960,6 +1065,7 @@ router.post("/batches", (req, res) => {
     hypothesis: exp.hypothesis,
     runIds: [],
     measuredValues: [],
+    seeds: [],
     passes: 0,
     totalRuns: repeats,
     status: "pending",
@@ -976,6 +1082,7 @@ router.post("/batches", (req, res) => {
     scale,
     ticksPerExperiment,
     repeats,
+    baseSeed,
     createdAt: Date.now(),
     completedAt: null,
     currentIndex: 0,
@@ -1004,7 +1111,9 @@ router.post("/batches", (req, res) => {
       item.status = "running";
       broadcastBatch(batch, "item_start", { batchId: batch.id, item });
       await runBatchItem(batch, item, exp);
-      if (item.status === "completed" || item.status === "error") {
+      // runBatchItem mutates item.status; widen the narrowed type for TS.
+      const itemStatus = item.status as BatchItem["status"];
+      if (itemStatus === "completed" || itemStatus === "error") {
         batch.totalCompleted += 1;
         // Pass = at least 50% of repeats passed
         if (item.passes * 2 >= item.totalRuns) batch.totalPassed += 1;
@@ -1031,7 +1140,12 @@ router.post("/batches", (req, res) => {
     batch.subscribers.clear();
   })().catch(() => undefined);
 
-  res.status(201).json({ id, total: batch.items.length, repeats });
+  res.status(201).json({
+    id,
+    total: batch.items.length,
+    repeats,
+    baseSeed: batch.baseSeed,
+  });
 });
 
 router.get("/batches", (_req, res) => {
@@ -1063,7 +1177,21 @@ router.delete("/batches/:id", (req, res) => {
 });
 
 // ─── Leaderboard ─────────────────────────────────────────────────────────────
-// Aggregate every persisted batch by experimentId.
+// Aggregates persisted batches by experimentId. Optional query params:
+//   ?phase=PH0           – restrict to a single phase
+//   ?search=word         – substring match on id / name / hypothesis (case-insensitive)
+//   ?baseline=<id>       – include delta vs that baseline batch (mean diff + Welch p)
+//   ?minRuns=N           – drop rows with fewer than N total simulator runs
+//   ?excludeInterrupted=1 – ignore batches that crashed mid-flight
+
+interface BaselineDelta {
+  baselineId: string;
+  delta: number | null;       // currentMean − baselineMean
+  pTwoSided: number | null;   // Welch's t two-sided p
+  baselineMean: number | null;
+  baselineN: number;
+  sign: "better" | "worse" | "tie" | null; // direction-aware vs target
+}
 
 interface LeaderboardRow {
   experimentId: string;
@@ -1072,69 +1200,135 @@ interface LeaderboardRow {
   metric: string;
   target: number;
   targetDir: 1 | -1;
-  totalRuns: number;       // total simulator runs across batches (sum of repeats)
+  totalRuns: number;
   totalPasses: number;
-  passRate: number;        // totalPasses / totalRuns
-  bestMeasured: number | null;   // direction-aware best measured value
+  passRate: number;
+  bestMeasured: number | null;
   meanMeasured: number | null;
   stdMeasured: number | null;
-  lastSeen: number;        // timestamp of most recent batch where it appeared
-  batchCount: number;      // how many batches this experiment was in
+  ci95Lo: number | null;
+  ci95Hi: number | null;
+  lastSeen: number;
+  batchCount: number;
   hypothesis: string;
+  pinned: boolean;
+  noteText: string | null;
+  noteTags: string[];
+  baselineDelta: BaselineDelta | null;
 }
 
-router.get("/leaderboard", (_req, res) => {
-  const acc = new Map<
-    string,
-    {
-      experimentName: string;
-      phase: string;
-      metric: string;
-      target: number;
-      targetDir: 1 | -1;
-      hypothesis: string;
-      values: number[];
-      totalRuns: number;
-      totalPasses: number;
-      lastSeen: number;
-      batchIds: Set<string>;
+interface AccRow {
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  hypothesis: string;
+  values: number[];
+  totalRuns: number;
+  totalPasses: number;
+  lastSeen: number;
+  batchIds: Set<string>;
+}
+
+function aggregateBatch(
+  acc: Map<string, AccRow>,
+  b: BatchRecord,
+): void {
+  for (const it of b.items) {
+    let row = acc.get(it.experimentId);
+    if (!row) {
+      row = {
+        experimentName: it.experimentName,
+        phase: it.phase,
+        metric: it.metric,
+        target: it.target,
+        targetDir: it.targetDir,
+        hypothesis: it.hypothesis,
+        values: [],
+        totalRuns: 0,
+        totalPasses: 0,
+        lastSeen: 0,
+        batchIds: new Set(),
+      };
+      acc.set(it.experimentId, row);
     }
-  >();
+    row.values.push(...it.measuredValues);
+    row.totalRuns += it.totalRuns;
+    row.totalPasses += it.passes;
+    row.lastSeen = Math.max(row.lastSeen, b.completedAt ?? b.createdAt);
+    row.batchIds.add(b.id);
+  }
+}
+
+router.get("/leaderboard", (req, res) => {
+  const phaseFilter = typeof req.query["phase"] === "string" ? String(req.query["phase"]) : "";
+  const searchFilter = typeof req.query["search"] === "string"
+    ? String(req.query["search"]).toLowerCase()
+    : "";
+  const baselineId = typeof req.query["baseline"] === "string"
+    ? String(req.query["baseline"])
+    : "";
+  const minRuns = Math.max(0, Number(req.query["minRuns"] ?? 0) || 0);
+  const excludeInterrupted = req.query["excludeInterrupted"] === "1";
+
+  const acc = new Map<string, AccRow>();
+  let included = 0;
   for (const b of batches.values()) {
-    for (const it of b.items) {
-      let row = acc.get(it.experimentId);
-      if (!row) {
-        row = {
-          experimentName: it.experimentName,
-          phase: it.phase,
-          metric: it.metric,
-          target: it.target,
-          targetDir: it.targetDir,
-          hypothesis: it.hypothesis,
-          values: [],
-          totalRuns: 0,
-          totalPasses: 0,
-          lastSeen: 0,
-          batchIds: new Set(),
-        };
-        acc.set(it.experimentId, row);
-      }
-      row.values.push(...it.measuredValues);
-      row.totalRuns += it.totalRuns;
-      row.totalPasses += it.passes;
-      row.lastSeen = Math.max(row.lastSeen, b.completedAt ?? b.createdAt);
-      row.batchIds.add(b.id);
+    if (excludeInterrupted && b.status === "interrupted") continue;
+    aggregateBatch(acc, b);
+    included++;
+  }
+
+  // Baseline batch (optional). We aggregate only the baseline batch to compute
+  // a per-experiment reference distribution.
+  let baselineAcc: Map<string, AccRow> | null = null;
+  if (baselineId) {
+    const baseBatch = batches.get(baselineId);
+    if (baseBatch) {
+      baselineAcc = new Map();
+      aggregateBatch(baselineAcc, baseBatch);
     }
   }
+  const allNotes = notesStore.all();
+
   const out: LeaderboardRow[] = [];
   for (const [experimentId, row] of acc.entries()) {
+    if (phaseFilter && row.phase !== phaseFilter) continue;
+    if (row.totalRuns < minRuns) continue;
+    if (
+      searchFilter &&
+      !(
+        experimentId.toLowerCase().includes(searchFilter) ||
+        row.experimentName.toLowerCase().includes(searchFilter) ||
+        row.hypothesis.toLowerCase().includes(searchFilter)
+      )
+    ) {
+      continue;
+    }
     const stats = meanStd(row.values);
-    let best: number | null = null;
-    for (const v of row.values) {
-      if (!Number.isFinite(v)) continue;
-      if (best === null) best = v;
-      else if (row.targetDir === 1) best = Math.max(best, v);
-      else best = Math.min(best, v);
+    const ci = bootstrapCI(row.values, 600);
+    const note = allNotes[experimentId];
+    let baselineDelta: BaselineDelta | null = null;
+    if (baselineAcc) {
+      const ref = baselineAcc.get(experimentId);
+      if (ref && ref.values.length > 0 && row.values.length > 0) {
+        const t = welchT(row.values, ref.values);
+        const refStats = meanStd(ref.values);
+        const delta = t.delta ?? null;
+        let sign: BaselineDelta["sign"] = "tie";
+        if (delta !== null && Math.abs(delta) > 1e-9) {
+          sign = (row.targetDir === 1 ? delta > 0 : delta < 0) ? "better" : "worse";
+        }
+        baselineDelta = {
+          baselineId,
+          delta,
+          pTwoSided: t.pTwoSided,
+          baselineMean: refStats.mean,
+          baselineN: ref.values.length,
+          sign,
+        };
+      }
     }
     out.push({
       experimentId,
@@ -1146,16 +1340,211 @@ router.get("/leaderboard", (_req, res) => {
       totalRuns: row.totalRuns,
       totalPasses: row.totalPasses,
       passRate: row.totalRuns > 0 ? row.totalPasses / row.totalRuns : 0,
-      bestMeasured: best,
+      bestMeasured: bestMeasuredCore(row.values, row.targetDir),
       meanMeasured: stats.mean,
       stdMeasured: stats.std,
+      ci95Lo: ci.ci95Lo,
+      ci95Hi: ci.ci95Hi,
       lastSeen: row.lastSeen,
       batchCount: row.batchIds.size,
       hypothesis: row.hypothesis,
+      pinned: Boolean(note?.pinned),
+      noteText: note?.text ? note.text : null,
+      noteTags: note?.tags ?? [],
+      baselineDelta,
     });
   }
-  out.sort((a, b) => b.passRate - a.passRate || b.totalRuns - a.totalRuns);
-  res.json({ rows: out, totalBatches: batches.size });
+  out.sort((a, b) => {
+    // Pinned rows always float to the top
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.passRate - a.passRate || b.totalRuns - a.totalRuns;
+  });
+  res.json({
+    rows: out,
+    totalBatches: batches.size,
+    includedBatches: included,
+    ...(baselineId ? { baselineId, baselineFound: Boolean(baselineAcc) } : {}),
+  });
+});
+
+// ─── Diff: compare two batches experiment-by-experiment with Welch's t ───────
+router.get("/batches/:id/diff/:other", (req, res) => {
+  const a = batches.get(String(req.params.id ?? ""));
+  const b = batches.get(String(req.params.other ?? ""));
+  if (!a || !b) {
+    res.status(404).json({ error: "one or both batches not found" });
+    return;
+  }
+  const aMap = new Map(a.items.map((it) => [it.experimentId, it]));
+  const bMap = new Map(b.items.map((it) => [it.experimentId, it]));
+  const ids = new Set<string>([...aMap.keys(), ...bMap.keys()]);
+  type DiffRow = {
+    experimentId: string;
+    experimentName: string;
+    phase: string;
+    metric: string;
+    target: number;
+    targetDir: 1 | -1;
+    aMean: number | null;
+    bMean: number | null;
+    aN: number;
+    bN: number;
+    delta: number | null;
+    pTwoSided: number | null;
+    sign: "better" | "worse" | "tie" | null;
+  };
+  const rows: DiffRow[] = [];
+  for (const id of ids) {
+    const ai = aMap.get(id);
+    const bi = bMap.get(id);
+    const ref = ai ?? bi;
+    if (!ref) continue;
+    const aStats = ai ? meanStd(ai.measuredValues) : { mean: null, std: null };
+    const bStats = bi ? meanStd(bi.measuredValues) : { mean: null, std: null };
+    let t: ReturnType<typeof welchT> = { t: null, df: null, pTwoSided: null, delta: null };
+    if (ai && bi) t = welchT(ai.measuredValues, bi.measuredValues);
+    let sign: DiffRow["sign"] = null;
+    if (t.delta !== null && Math.abs(t.delta) > 1e-9) {
+      sign = (ref.targetDir === 1 ? t.delta > 0 : t.delta < 0) ? "better" : "worse";
+    } else if (t.delta === 0) {
+      sign = "tie";
+    }
+    rows.push({
+      experimentId: id,
+      experimentName: ref.experimentName,
+      phase: ref.phase,
+      metric: ref.metric,
+      target: ref.target,
+      targetDir: ref.targetDir,
+      aMean: aStats.mean,
+      bMean: bStats.mean,
+      aN: ai?.measuredValues.length ?? 0,
+      bN: bi?.measuredValues.length ?? 0,
+      delta: t.delta,
+      pTwoSided: t.pTwoSided,
+      sign,
+    });
+  }
+  rows.sort((x, y) => {
+    const xs = (y.pTwoSided ?? 1) - (x.pTwoSided ?? 1);
+    if (xs !== 0) return -xs;
+    return Math.abs(y.delta ?? 0) - Math.abs(x.delta ?? 0);
+  });
+  res.json({
+    aId: a.id,
+    bId: b.id,
+    aCreatedAt: a.createdAt,
+    bCreatedAt: b.createdAt,
+    rows,
+  });
+});
+
+// ─── Re-run: launch a fresh batch with the same experiments + same seed ──────
+router.post("/batches/:id/rerun", (req, res) => {
+  const src = batches.get(String(req.params.id ?? ""));
+  if (!src) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  const body = (req.body ?? {}) as { keepSeed?: boolean; repeats?: number };
+  const id = `b${nextBatchId++}`;
+  // keepSeed defaults to true — but if the source has no real baseSeed
+  // (legacy batches stored before the seed work, baseSeed === 0), always
+  // mint a fresh one so we don't run with a degenerate "0" seed.
+  const freshSeed = ((Date.now() & 0x7fffffff) ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+  const baseSeed =
+    body.keepSeed === false || !src.baseSeed ? freshSeed : src.baseSeed;
+  const repeats = Math.min(Math.max(body.repeats ?? src.repeats, 1), 5);
+  const items: BatchItem[] = src.items.map((it) => ({
+    index: it.index,
+    experimentId: it.experimentId,
+    experimentName: it.experimentName,
+    phase: it.phase,
+    metric: it.metric,
+    target: it.target,
+    targetDir: it.targetDir,
+    hypothesis: it.hypothesis,
+    runIds: [],
+    measuredValues: [],
+    seeds: [],
+    passes: 0,
+    totalRuns: repeats,
+    status: "pending",
+    meanMeasured: null,
+    stdMeasured: null,
+    ticksDone: 0,
+    ticksTotal: it.ticksTotal,
+    durationMs: 0,
+  }));
+  const batch: BatchRecord = {
+    id,
+    status: "pending",
+    scale: src.scale,
+    ticksPerExperiment: src.ticksPerExperiment,
+    repeats,
+    baseSeed,
+    createdAt: Date.now(),
+    completedAt: null,
+    currentIndex: 0,
+    totalCompleted: 0,
+    totalPassed: 0,
+    cancelled: false,
+    items,
+    subscribers: new Set(),
+    cancelChild: () => undefined,
+  };
+  batches.set(id, batch);
+  pruneBatches();
+
+  (async () => {
+    batch.status = "running";
+    broadcastBatch(batch, "batch_start", serializeBatch(batch));
+    for (let i = 0; i < batch.items.length; i++) {
+      if (batch.cancelled) break;
+      const item = batch.items[i] as BatchItem;
+      const exp = findExperiment(item.experimentId);
+      if (!exp) {
+        item.status = "skipped";
+        continue;
+      }
+      batch.currentIndex = i;
+      item.status = "running";
+      broadcastBatch(batch, "item_start", { batchId: batch.id, item });
+      await runBatchItem(batch, item, exp);
+      const itemStatus = item.status as BatchItem["status"];
+      if (itemStatus === "completed" || itemStatus === "error") {
+        batch.totalCompleted += 1;
+        if (item.passes * 2 >= item.totalRuns) batch.totalPassed += 1;
+      }
+      broadcastBatch(batch, "item_complete", {
+        batchId: batch.id,
+        item,
+        totalCompleted: batch.totalCompleted,
+        totalPassed: batch.totalPassed,
+      });
+      persistBatch(batch);
+    }
+    batch.status = batch.cancelled ? "cancelled" : "completed";
+    batch.completedAt = Date.now();
+    persistBatch(batch);
+    broadcastBatch(batch, "batch_complete", serializeBatch(batch));
+    for (const sub of batch.subscribers) {
+      try {
+        sub.end();
+      } catch {
+        /* */
+      }
+    }
+    batch.subscribers.clear();
+  })().catch(() => undefined);
+
+  res.status(201).json({
+    id,
+    sourceBatchId: src.id,
+    total: batch.items.length,
+    repeats,
+    baseSeed,
+  });
 });
 
 router.get("/batches/:id/stream", (req, res) => {
@@ -1208,6 +1597,7 @@ function serializeRun(r: RunRecord, full: boolean) {
     metric: r.metric,
     measured: r.measured,
     target: r.target,
+    seed: r.seed ?? null,
     error: r.error,
     result: full ? r.result : null,
     arcResult: full
@@ -1223,6 +1613,52 @@ function serializeRun(r: RunRecord, full: boolean) {
       : null,
     history: full ? r.history : null,
   };
+}
+
+// ─── Graceful-shutdown helpers ──────────────────────────────────────────────
+// Called from index.ts on SIGTERM/SIGINT so any batch or sweep that was
+// running gets persisted with a clear "interrupted" status before exit. Lets
+// the dashboard distinguish a crashed run from a user-cancelled one.
+export function markRunningWorkInterrupted(): {
+  batches: number;
+  sweeps: number;
+} {
+  let touchedBatches = 0;
+  let touchedSweeps = 0;
+  const now = Date.now();
+  for (const b of batches.values()) {
+    if (b.status === "running" || b.status === "pending") {
+      b.status = "interrupted";
+      b.cancelled = true;
+      b.completedAt = now;
+      try {
+        b.cancelChild();
+      } catch {
+        /* */
+      }
+      persistBatch(b);
+      touchedBatches++;
+    }
+  }
+  for (const s of sweeps.values()) {
+    if (s.status === "running" || s.status === "pending") {
+      s.status = "cancelled";
+      s.cancelled = true;
+      s.completedAt = now;
+      const cur = s.combos[s.currentIndex];
+      if (cur?.runId) {
+        const child = runs.get(cur.runId);
+        try {
+          child?.cancel();
+        } catch {
+          /* */
+        }
+      }
+      persistSweep(s);
+      touchedSweeps++;
+    }
+  }
+  return { batches: touchedBatches, sweeps: touchedSweeps };
 }
 
 export default router;

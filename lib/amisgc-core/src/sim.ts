@@ -15,19 +15,35 @@ import {
   computeFSI,
   computePhi,
   makePhiPairs,
+  mulberry32,
   project8,
 } from "./math.js";
 
 export interface SimContext {
   P: Params;
   phiPairs: Array<[number, number]>;
+  rng: () => number;
+  seed: number;
 }
 
-export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
+export interface CreateSimOptions {
+  seed?: number;
+}
+
+export function createSim(
+  P: Params,
+  opts: CreateSimOptions = {},
+): { sim: SimState; ctx: SimContext } {
   const N = P.N;
   const G = P.G;
   const inSet = new Set(P.IN_IDS);
   const B = P.B;
+
+  const seed =
+    typeof opts.seed === "number" && Number.isFinite(opts.seed)
+      ? Math.floor(opts.seed) >>> 0
+      : (((Date.now() & 0x7fffffff) ^ Math.floor(Math.random() * 0x7fffffff)) || 1) >>> 0;
+  const rng = mulberry32(seed);
 
   const ns: Neuron[] = [];
   for (let i = 0; i < N; i++) {
@@ -37,7 +53,7 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
       gy: Math.floor(i / G),
       atp:
         P.ATP_START_MIN +
-        Math.random() * (P.ATP_START_MAX - P.ATP_START_MIN),
+        rng() * (P.ATP_START_MAX - P.ATP_START_MIN),
       refractory: 0,
       h: P.H_INIT,
       atrophied_at: -1,
@@ -58,7 +74,7 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
       atp_spent: 0,
       branch_soma_w: Array.from(
         { length: B },
-        () => (0.6 + Math.random() * 0.4) / Math.max(1, B)
+        () => (0.6 + rng() * 0.4) / Math.max(1, B)
       ),
       branch_out: new Array(B).fill(0),
       d_eff: 0,
@@ -73,7 +89,7 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
       a_slow: 0.3,
       epsilon: 0,
       epsilon_dd: 0,
-      v: 0.45 + Math.random() * 0.1,
+      v: 0.45 + rng() * 0.1,
       A: 1 / N,
       s_soma: 0,
       C: 0,
@@ -100,9 +116,9 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
     sorted.sort((a, b) => a[1] - b[1]);
     for (let k = 0; k < P.K_LOCAL && k < sorted.length; k++) {
       const jO = (sorted[k] as [number, number])[0];
-      const j = Math.random() < P.REWIRE ? Math.floor(Math.random() * N) : jO;
+      const j = rng() < P.REWIRE ? Math.floor(rng() * N) : jO;
       if (j === i || ni.conns.find((c) => c.to === j)) continue;
-      const w = P.W_INIT_LO + Math.random() * (P.W_INIT_HI - P.W_INIT_LO);
+      const w = P.W_INIT_LO + rng() * (P.W_INIT_HI - P.W_INIT_LO);
       ni.conns.push({ to: j, w, branch: k % B });
       (ns[j] as Neuron).sources.push(i);
     }
@@ -216,7 +232,9 @@ export function createSim(P: Params): { sim: SimState; ctx: SimContext } {
 
   const ctx: SimContext = {
     P,
-    phiPairs: makePhiPairs(N),
+    phiPairs: makePhiPairs(N, rng),
+    rng,
+    seed,
   };
 
   return { sim, ctx };
@@ -272,6 +290,7 @@ export function simTick(sim: SimState, ctx: SimContext): number {
   const P = ctx.P;
   const N = P.N;
   const B = P.B;
+  const rng = ctx.rng;
   const TOPK_CONSCIOUS = Math.max(1, Math.floor(N * P.TOPK_FRACTION));
   const { ns, body } = sim;
   sim.t++;
@@ -284,7 +303,7 @@ export function simTick(sim: SimState, ctx: SimContext): number {
 
   // Body dynamics
   body.energy -= P.BODY_ENERGY_DRAIN;
-  if (Math.random() < P.BODY_FEED_PROB)
+  if (rng() < P.BODY_FEED_PROB)
     body.energy = Math.min(1, body.energy + P.BODY_FEED_AMT);
   if (body.energy < 0) body.energy = 0;
   let meanM = 0;
@@ -327,7 +346,7 @@ export function simTick(sim: SimState, ctx: SimContext): number {
       continue;
     }
     let basal = n.isInput ? envBit * P.ENV_AMP : 0;
-    if (t <= P.DEV_TICKS) basal += Math.random() * P.DEV_AMP;
+    if (t <= P.DEV_TICKS) basal += rng() * P.DEV_AMP;
     if (B <= 1) {
       const srcs = n.sources;
       for (let si = 0; si < srcs.length; si++) {
@@ -435,8 +454,8 @@ export function simTick(sim: SimState, ctx: SimContext): number {
           P.ALPHA_D * th(n.v) +
           entropyGrad;
         // Gaussian noise via Box–Muller (one draw per neuron per iter)
-        const u1 = Math.max(1e-9, Math.random());
-        const u2 = Math.random();
+        const u1 = Math.max(1e-9, rng());
+        const u2 = rng();
         const gauss = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
         const noise = gauss * P.NOISE_SIGMA;
         n.a -= P.ETA_ATT * dEda;
@@ -659,11 +678,11 @@ export function simTick(sim: SimState, ctx: SimContext): number {
       .slice(0, 15);
     for (let i = 0; i < N; i++) {
       const n = ns[i] as Neuron;
-      if (n.h >= P.H_ATROPHIED || Math.random() > P.P_REGROW) continue;
+      if (n.h >= P.H_ATROPHIED || rng() > P.P_REGROW) continue;
       const tgt =
-        Math.random() < P.REGROW_BIAS_MI && miS.length > 0
-          ? (miS[Math.floor(Math.random() * Math.min(5, miS.length))] as Neuron)
-          : (ns[Math.floor(Math.random() * N)] as Neuron);
+        rng() < P.REGROW_BIAS_MI && miS.length > 0
+          ? (miS[Math.floor(rng() * Math.min(5, miS.length))] as Neuron)
+          : (ns[Math.floor(rng() * N)] as Neuron);
       if (
         !tgt ||
         tgt.id === n.id ||
@@ -1150,18 +1169,20 @@ export function captureAttractor(sim: SimState, ctx: SimContext): void {
   });
 }
 
-// Re-seed apical state from a captured attractor (for transfer/reuse tests)
+// Re-seed apical state from a captured attractor (for transfer/reuse tests).
+// Pass a deterministic `rng` (from a SimContext) for reproducible noise.
 export function seedFromAttractor(
   sim: SimState,
   attractorId: string,
-  noise = 0.05
+  noise = 0.05,
+  rng: () => number = Math.random
 ): boolean {
   const att = sim.attractorLibrary.find((a) => a.id === attractorId);
   if (!att) return false;
   for (let i = 0; i < sim.ns.length; i++) {
     const n = sim.ns[i] as Neuron;
     const a0 = att.apicalSnapshot[i] ?? 0;
-    n.a = a0 + (Math.random() - 0.5) * 2 * noise;
+    n.a = a0 + (rng() - 0.5) * 2 * noise;
     n.a_prev = a0;
   }
   return true;

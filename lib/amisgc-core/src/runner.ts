@@ -8,6 +8,7 @@ import {
   ALL_EXPERIMENTS,
 } from "./experiments.js";
 import { TASK_ORDER } from "./tasks.js";
+import { stabilityCheck, type StabilityResult } from "./stats.js";
 
 export interface RunOptions {
   scale?: 81 | 810 | 81000;
@@ -20,6 +21,8 @@ export interface RunOptions {
   attractorEvery?: number;
   // Cancellation token
   signal?: { cancelled: boolean };
+  // Deterministic seed (omit for time-based fallback)
+  seed?: number;
   // Periodic stats callback
   onSample?: (event: RunSampleEvent) => void;
   // Phase region transition callback
@@ -34,6 +37,7 @@ export interface RunStart {
   scale: 81 | 810 | 81000;
   N: number;
   ticks: number;
+  seed: number;
   hypothesis?: string;
 }
 
@@ -47,6 +51,11 @@ export interface RunPhaseEvent {
   phaseRegion: string;
 }
 
+export interface MetricSeriesPoint {
+  t: number;
+  v: number;
+}
+
 export interface RunCompleteEvent {
   t: number;
   stats: Stats;
@@ -57,6 +66,11 @@ export interface RunCompleteEvent {
   target?: number;
   attractorCount: number;
   durationMs: number;
+  seed: number;
+  // Down-sampled measured-metric series (only present if `experimentId` was set
+  // so we know which Stat to follow). Used for stability/convergence analysis.
+  metricSeries?: MetricSeriesPoint[];
+  stability?: StabilityResult;
 }
 
 export interface RunHandle {
@@ -67,6 +81,8 @@ export interface RunHandle {
 
 const SAMPLE_DEFAULT = 200;
 const ATTRACTOR_DEFAULT = 5000;
+// Cap on how many points we keep in the metric series (memory + payload size).
+const METRIC_SERIES_CAP = 400;
 
 export function startRun(opts: RunOptions = {}): RunHandle {
   const signal = opts.signal ?? { cancelled: false };
@@ -88,19 +104,28 @@ export function startRun(opts: RunOptions = {}): RunHandle {
       ...(opts.customParams ?? {}),
     };
     const ticks = opts.ticks ?? exp?.ticks ?? 50000;
-    const { sim, ctx } = createSim(params);
+    const createOpts = typeof opts.seed === "number" ? { seed: opts.seed } : {};
+    const { sim, ctx } = createSim(params, createOpts);
+    const seed = ctx.seed;
 
     opts.onStart?.({
       experimentId: opts.experimentId ?? null,
       scale,
       N: params.N,
       ticks,
+      seed,
       ...(exp?.hypothesis ? { hypothesis: exp.hypothesis } : {}),
     });
 
     let lastPhase = sim.phaseRegion;
     const sampleEvery = opts.sampleEvery ?? SAMPLE_DEFAULT;
     const attractorEvery = opts.attractorEvery ?? ATTRACTOR_DEFAULT;
+    const metricKey = exp?.metric;
+    const metricSeries: MetricSeriesPoint[] = [];
+    // Down-sample to fit METRIC_SERIES_CAP. Estimate stride from total samples.
+    const totalSamples = Math.max(1, Math.ceil(ticks / sampleEvery));
+    const seriesStride = Math.max(1, Math.ceil(totalSamples / METRIC_SERIES_CAP));
+    let sampleCounter = 0;
 
     // Cycle through tasks naturally; advanceTask runs internally based on TASK_TICKS
     setTask(sim, "COPY");
@@ -117,6 +142,13 @@ export function startRun(opts: RunOptions = {}): RunHandle {
             lastPhase = stats.phaseRegion;
           }
           opts.onSample?.({ t: sim.t, stats });
+          if (metricKey && sampleCounter % seriesStride === 0) {
+            const v = (stats as unknown as Record<string, number>)[metricKey];
+            if (typeof v === "number" && Number.isFinite(v)) {
+              metricSeries.push({ t: sim.t, v });
+            }
+          }
+          sampleCounter++;
           // Yield to event loop so SSE clients can keep up
           if (sim.t % (sampleEvery * 4) === 0) {
             await new Promise((r) => setImmediate(r));
@@ -126,11 +158,7 @@ export function startRun(opts: RunOptions = {}): RunHandle {
         if (sim.t % attractorEvery === 0 && sim.t > 0) {
           captureAttractor(sim, ctx);
         }
-
-        // After enough learning on the first task, rotate through TASK_ORDER
-        if (sim.t > 0 && sim.t % params.TASK_TICKS === 0) {
-          // task rotation already handled inside simTick via advanceTask
-        }
+        // (Task rotation is fully handled inside simTick via advanceTask.)
       }
     } catch (err) {
       opts.onError?.(err as Error);
@@ -150,7 +178,14 @@ export function startRun(opts: RunOptions = {}): RunHandle {
       } else {
         passed = false;
       }
+      if (typeof measured === "number" && Number.isFinite(measured)) {
+        // Make sure the final point is in the series for accurate stability.
+        const last = metricSeries[metricSeries.length - 1];
+        if (!last || last.t !== sim.t) metricSeries.push({ t: sim.t, v: measured });
+      }
     }
+    const stability =
+      metricSeries.length >= 4 ? stabilityCheck(metricSeries) : undefined;
     const result: RunCompleteEvent = {
       t: sim.t,
       stats,
@@ -159,6 +194,9 @@ export function startRun(opts: RunOptions = {}): RunHandle {
       ...(measured !== undefined ? { measured } : {}),
       attractorCount: sim.attractorLibrary.length,
       durationMs: Date.now() - startTime,
+      seed,
+      ...(metricSeries.length > 0 ? { metricSeries } : {}),
+      ...(stability ? { stability } : {}),
     };
     opts.onComplete?.(result);
     return result;

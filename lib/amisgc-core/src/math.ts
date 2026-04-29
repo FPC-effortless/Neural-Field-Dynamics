@@ -123,12 +123,15 @@ export function computeCoh(ns: Neuron[], N: number): number {
   return clamp(1 - Math.sqrt(sig / N) / (mu + 0.01));
 }
 
-export function makePhiPairs(N: number): Array<[number, number]> {
+export function makePhiPairs(
+  N: number,
+  rng: () => number = Math.random,
+): Array<[number, number]> {
   const pairs: Array<[number, number]> = [];
   for (let i = 0; i < 28; i++) {
     pairs.push([
-      Math.floor(Math.random() * N),
-      Math.floor(Math.random() * N),
+      Math.floor(rng() * N),
+      Math.floor(rng() * N),
     ]);
   }
   return pairs;

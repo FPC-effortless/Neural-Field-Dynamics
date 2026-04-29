@@ -6,3 +6,4 @@ export * from "./sim.js";
 export * from "./experiments.js";
 export * from "./runner.js";
 export * from "./arc.js";
+export * from "./stats.js";
