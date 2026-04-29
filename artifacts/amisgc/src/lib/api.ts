@@ -373,6 +373,31 @@ export interface CreateBatchRequest {
   repeats?: number;
 }
 
+export interface LeaderboardRow {
+  experimentId: string;
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  totalRuns: number;
+  totalPasses: number;
+  passRate: number;
+  bestMeasured: number | null;
+  meanMeasured: number | null;
+  stdMeasured: number | null;
+  lastSeen: number;
+  batchCount: number;
+  hypothesis: string;
+}
+
+export const leaderboardApi = {
+  get: () =>
+    jsonFetch<{ rows: LeaderboardRow[]; totalBatches: number }>(
+      `${API_PREFIX}/leaderboard`,
+    ),
+};
+
 export const batchApi = {
   list: () => jsonFetch<{ batches: BatchDetail[] }>(`${API_PREFIX}/batches`),
   get: (id: string) => jsonFetch<BatchDetail>(`${API_PREFIX}/batches/${id}`),

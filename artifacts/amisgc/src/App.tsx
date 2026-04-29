@@ -8,6 +8,7 @@ import { RunDetailPanel } from "./components/RunDetailPanel";
 import { Panel, Pill } from "./components/Panel";
 import { SweepPanel } from "./components/SweepPanel";
 import { BatchPanel } from "./components/BatchPanel";
+import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import {
   api,
   subscribeRun,
@@ -59,6 +60,7 @@ function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
@@ -232,6 +234,7 @@ function AppShell() {
         onExportTable={handleExportTable}
         onOpenSweep={() => setSweepOpen(true)}
         onOpenBatch={() => setBatchOpen(true)}
+        onOpenLeaderboard={() => setLeaderboardOpen(true)}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
         canExport={!!activeRun}
@@ -307,6 +310,10 @@ function AppShell() {
 
       <SweepPanel open={sweepOpen} onClose={() => setSweepOpen(false)} />
       <BatchPanel open={batchOpen} onClose={() => setBatchOpen(false)} groups={groups} />
+      <LeaderboardPanel
+        open={leaderboardOpen}
+        onClose={() => setLeaderboardOpen(false)}
+      />
 
       {drawerOpen && (
         <div className="mobile-drawer">
@@ -356,6 +363,7 @@ interface HeaderProps {
   onExportTable: () => void;
   onOpenSweep: () => void;
   onOpenBatch: () => void;
+  onOpenLeaderboard: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
   canExport: boolean;
@@ -420,6 +428,7 @@ function Header({
   onExportTable,
   onOpenSweep,
   onOpenBatch,
+  onOpenLeaderboard,
   speed,
   onSpeedChange,
   canExport,
@@ -502,6 +511,13 @@ function Header({
           </HeaderButton>
           <HeaderButton onClick={onOpenSweep} color="#ffd060" title="parameter auto-sweep">
             ⚡ AUTO SWEEP
+          </HeaderButton>
+          <HeaderButton
+            onClick={onOpenLeaderboard}
+            color="#aa88ff"
+            title="aggregate stats across all batches"
+          >
+            🏆 STATS
           </HeaderButton>
 
           <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />

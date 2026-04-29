@@ -1062,6 +1062,102 @@ router.delete("/batches/:id", (req, res) => {
   res.json({ id: b.id, status: "cancelled" });
 });
 
+// ─── Leaderboard ─────────────────────────────────────────────────────────────
+// Aggregate every persisted batch by experimentId.
+
+interface LeaderboardRow {
+  experimentId: string;
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  totalRuns: number;       // total simulator runs across batches (sum of repeats)
+  totalPasses: number;
+  passRate: number;        // totalPasses / totalRuns
+  bestMeasured: number | null;   // direction-aware best measured value
+  meanMeasured: number | null;
+  stdMeasured: number | null;
+  lastSeen: number;        // timestamp of most recent batch where it appeared
+  batchCount: number;      // how many batches this experiment was in
+  hypothesis: string;
+}
+
+router.get("/leaderboard", (_req, res) => {
+  const acc = new Map<
+    string,
+    {
+      experimentName: string;
+      phase: string;
+      metric: string;
+      target: number;
+      targetDir: 1 | -1;
+      hypothesis: string;
+      values: number[];
+      totalRuns: number;
+      totalPasses: number;
+      lastSeen: number;
+      batchIds: Set<string>;
+    }
+  >();
+  for (const b of batches.values()) {
+    for (const it of b.items) {
+      let row = acc.get(it.experimentId);
+      if (!row) {
+        row = {
+          experimentName: it.experimentName,
+          phase: it.phase,
+          metric: it.metric,
+          target: it.target,
+          targetDir: it.targetDir,
+          hypothesis: it.hypothesis,
+          values: [],
+          totalRuns: 0,
+          totalPasses: 0,
+          lastSeen: 0,
+          batchIds: new Set(),
+        };
+        acc.set(it.experimentId, row);
+      }
+      row.values.push(...it.measuredValues);
+      row.totalRuns += it.totalRuns;
+      row.totalPasses += it.passes;
+      row.lastSeen = Math.max(row.lastSeen, b.completedAt ?? b.createdAt);
+      row.batchIds.add(b.id);
+    }
+  }
+  const out: LeaderboardRow[] = [];
+  for (const [experimentId, row] of acc.entries()) {
+    const stats = meanStd(row.values);
+    let best: number | null = null;
+    for (const v of row.values) {
+      if (!Number.isFinite(v)) continue;
+      if (best === null) best = v;
+      else if (row.targetDir === 1) best = Math.max(best, v);
+      else best = Math.min(best, v);
+    }
+    out.push({
+      experimentId,
+      experimentName: row.experimentName,
+      phase: row.phase,
+      metric: row.metric,
+      target: row.target,
+      targetDir: row.targetDir,
+      totalRuns: row.totalRuns,
+      totalPasses: row.totalPasses,
+      passRate: row.totalRuns > 0 ? row.totalPasses / row.totalRuns : 0,
+      bestMeasured: best,
+      meanMeasured: stats.mean,
+      stdMeasured: stats.std,
+      lastSeen: row.lastSeen,
+      batchCount: row.batchIds.size,
+      hypothesis: row.hypothesis,
+    });
+  }
+  out.sort((a, b) => b.passRate - a.passRate || b.totalRuns - a.totalRuns);
+  res.json({ rows: out, totalBatches: batches.size });
+});
+
 router.get("/batches/:id/stream", (req, res) => {
   const b = batches.get(req.params.id as string);
   if (!b) {

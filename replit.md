@@ -142,6 +142,8 @@ Each item shows its target metric, target threshold (≥ or ≤), measured mean 
 
 Completed (and cancelled) batches are persisted to `artifacts/api-server/data/batches/<id>.json` and reloaded on API startup, so you can scroll back through past runs in the **↺ PAST BATCHES** list inside the panel and click **LOAD** to inspect any of them. Batches that were running when the API was restarted come back marked `cancelled` (their simulator handles are gone).
 
+The **🏆 STATS** header button opens the **Leaderboard** — an aggregate view across every persisted batch. For each experiment that has been run at least once, it shows: total simulator runs, total passes, overall pass rate (colour-coded), best-ever measured value (direction-aware), mean ± std, batch count, and the timestamp it was last seen. Sortable by pass rate / total runs / phase / most recent / best measured, filterable by phase, exportable to CSV. Backed by `GET /api/leaderboard`.
+
 ---
 
 ## Tech stack
