@@ -1,4 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   startRun,
   ALL_EXPERIMENTS,
@@ -684,6 +686,72 @@ const batches = new Map<string, BatchRecord>();
 let nextBatchId = 1;
 const MAX_BATCHES = 10;
 
+// ─── Disk persistence (batches survive API restarts) ─────────────────────────
+const BATCHES_DIR = join(process.cwd(), "data", "batches");
+try {
+  mkdirSync(BATCHES_DIR, { recursive: true });
+} catch {
+  /* best-effort */
+}
+
+function persistBatch(b: BatchRecord): void {
+  try {
+    const snapshot = serializeBatch(b);
+    writeFileSync(
+      join(BATCHES_DIR, `${b.id}.json`),
+      JSON.stringify(snapshot, null, 2),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+function loadPersistedBatches(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(BATCHES_DIR);
+  } catch {
+    return;
+  }
+  let maxId = 0;
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const raw = readFileSync(join(BATCHES_DIR, file), "utf8");
+      const data = JSON.parse(raw) as ReturnType<typeof serializeBatch>;
+      // Crashed runs come back as cancelled (we no longer have their handles)
+      const status =
+        data.status === "running" || data.status === "pending"
+          ? "cancelled"
+          : data.status;
+      const rec: BatchRecord = {
+        id: data.id,
+        status,
+        scale: data.scale,
+        ticksPerExperiment: data.ticksPerExperiment,
+        repeats: data.repeats,
+        createdAt: data.createdAt,
+        completedAt: data.completedAt ?? Date.now(),
+        currentIndex: data.currentIndex,
+        totalCompleted: data.totalCompleted,
+        totalPassed: data.totalPassed,
+        cancelled: status === "cancelled",
+        items: data.items,
+        subscribers: new Set(),
+        cancelChild: () => undefined,
+      };
+      batches.set(rec.id, rec);
+      const num = Number(rec.id.replace(/^b/, ""));
+      if (Number.isFinite(num) && num > maxId) maxId = num;
+    } catch {
+      /* skip corrupt file */
+    }
+  }
+  if (maxId >= nextBatchId) nextBatchId = maxId + 1;
+}
+loadPersistedBatches();
+
 function broadcastBatch(b: BatchRecord, event: string, data: unknown): void {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const sub of b.subscribers) {
@@ -947,9 +1015,11 @@ router.post("/batches", (req, res) => {
         totalCompleted: batch.totalCompleted,
         totalPassed: batch.totalPassed,
       });
+      persistBatch(batch);
     }
     batch.status = batch.cancelled ? "cancelled" : "completed";
     batch.completedAt = Date.now();
+    persistBatch(batch);
     broadcastBatch(batch, "batch_complete", serializeBatch(batch));
     for (const sub of batch.subscribers) {
       try {

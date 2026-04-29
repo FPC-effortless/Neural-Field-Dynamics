@@ -47,3 +47,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Persisted batch results (regenerable, runtime artefacts)
+artifacts/api-server/data/

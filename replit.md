@@ -140,6 +140,8 @@ The header **▶ RUN ALL** button opens the experiment battery panel, with one-c
 
 Each item shows its target metric, target threshold (≥ or ≤), measured mean ± std across repeats, pass count (`k/N`), tick progress, and elapsed time. Batches can be cancelled mid-run and exported to CSV when done.
 
+Completed (and cancelled) batches are persisted to `artifacts/api-server/data/batches/<id>.json` and reloaded on API startup, so you can scroll back through past runs in the **↺ PAST BATCHES** list inside the panel and click **LOAD** to inspect any of them. Batches that were running when the API was restarted come back marked `cancelled` (their simulator handles are gone).
+
 ---
 
 ## Tech stack

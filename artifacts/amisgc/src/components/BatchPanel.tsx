@@ -61,6 +61,39 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phaseFilter, setPhaseFilter] = useState<string>("");
+  const [past, setPast] = useState<BatchDetail[]>([]);
+
+  // Refresh the list of past batches whenever the panel opens or a batch finishes
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const refresh = () => {
+      batchApi
+        .list()
+        .then((r) => {
+          if (alive) setPast(r.batches);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const live = batch?.status === "running" || batch?.status === "pending";
+    if (!live) return;
+    const t = setInterval(refresh, 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [open, batch?.status]);
+
+  const loadPast = async (id: string) => {
+    setError(null);
+    try {
+      const detail = await batchApi.get(id);
+      setBatch(detail);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   useEffect(() => {
     if (!open || !batch?.id) return;
@@ -283,6 +316,23 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
             {error ? (
               <div style={{ marginTop: 8, color: "#ff4477", fontSize: 9 }}>{error}</div>
             ) : null}
+
+            {past.length > 0 ? (
+              <div style={{ marginTop: 14 }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#5a4a1a",
+                    letterSpacing: 2,
+                    marginBottom: 6,
+                    fontWeight: 700,
+                  }}
+                >
+                  ↺ PAST BATCHES (persisted on disk)
+                </div>
+                <PastBatchTable past={past} onLoad={loadPast} />
+              </div>
+            ) : null}
           </Panel>
         ) : (
           <>
@@ -374,6 +424,81 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function PastBatchTable({
+  past,
+  onLoad,
+}: {
+  past: BatchDetail[];
+  onLoad: (id: string) => void;
+}) {
+  const fmtTs = (t: number): string => {
+    const d = new Date(t);
+    return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  };
+  return (
+    <div style={{ overflowX: "auto", maxHeight: 220, overflowY: "auto" }}>
+      <table style={{ width: "100%", fontSize: 8, color: "#0d7060", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid #0a2828", color: "#5a4a1a", letterSpacing: 1 }}>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>ID</th>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>WHEN</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>ITEMS</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>×REPS</th>
+            <th style={{ textAlign: "right", padding: "3px 6px" }}>PASS/COMP</th>
+            <th style={{ textAlign: "left", padding: "3px 6px" }}>STATUS</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {past.map((b) => {
+            const color =
+              b.status === "completed"
+                ? "#00ffc4"
+                : b.status === "running"
+                  ? "#ffb040"
+                  : b.status === "cancelled"
+                    ? "#ff4477"
+                    : "#0d7060";
+            return (
+              <tr key={b.id} style={{ borderBottom: "1px solid #0a2828" }}>
+                <td style={{ padding: "3px 6px", color: "#ffd060", fontFamily: "monospace" }}>
+                  {b.id}
+                </td>
+                <td style={{ padding: "3px 6px", color: "#0d7060" }}>{fmtTs(b.createdAt)}</td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>{b.total}</td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>×{b.repeats}</td>
+                <td style={{ padding: "3px 6px", textAlign: "right", color: "#00ffc4" }}>
+                  {b.totalPassed}/{b.totalCompleted}
+                </td>
+                <td style={{ padding: "3px 6px" }}>
+                  <Pill color={color}>{b.status}</Pill>
+                </td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>
+                  <button
+                    onClick={() => onLoad(b.id)}
+                    style={{
+                      background: "transparent",
+                      border: `1px solid ${color}`,
+                      color,
+                      padding: "2px 8px",
+                      fontSize: 8,
+                      letterSpacing: 1,
+                      borderRadius: 2,
+                      cursor: "pointer",
+                    }}
+                  >
+                    LOAD
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
