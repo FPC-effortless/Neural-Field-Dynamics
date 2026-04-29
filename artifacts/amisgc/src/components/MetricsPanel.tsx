@@ -49,7 +49,17 @@ export const MetricsPanel = memo(function MetricsPanel({
       {/* Existence Gate */}
       <Panel title="EXISTENCE GATE · Φ·PU·S_C" accent={gateColor}>
         <div className="flex items-center justify-between mb-1">
-          <span style={{ fontSize: 14, color: gateColor, letterSpacing: 2, fontWeight: 700 }}>
+          <span
+            style={{
+              fontSize: gateOpen ? 14 : 18,
+              color: gateColor,
+              letterSpacing: 2,
+              fontWeight: 700,
+              textShadow: gateOpen
+                ? "none"
+                : `0 0 6px ${gateColor}, 0 0 12px ${gateColor}`,
+            }}
+          >
             {gateLabel}
           </span>
           <Pill color={gateColor}>STREAK {gateStreak}</Pill>
@@ -58,8 +68,20 @@ export const MetricsPanel = memo(function MetricsPanel({
         <MR label="PU > 0.10" value={fmt(stats?.networkPU)} color={(stats?.networkPU ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
         <MR label="S_C > 0.10" value={fmt(stats?.networkSC)} color={(stats?.networkSC ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
         <MR label="H_C" value={fmt(stats?.networkH_C)} color="#aa88ff" />
+        <MR label="CAR" value={fmt(stats?.networkCAR)} color="#44ffcc" />
         {reason ? (
-          <div style={{ fontSize: 7, color: "#ff4477", marginTop: 4, letterSpacing: 1 }}>
+          <div
+            style={{
+              fontSize: 8,
+              color: "#ff4477",
+              marginTop: 6,
+              padding: "3px 5px",
+              letterSpacing: 1,
+              border: "1px solid #ff4477",
+              background: "rgba(255,68,119,0.08)",
+              fontWeight: 700,
+            }}
+          >
             ✗ {reason}
           </div>
         ) : null}

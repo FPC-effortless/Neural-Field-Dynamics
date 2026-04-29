@@ -105,6 +105,7 @@ export interface Stats {
   attractorCount: number;
   networkPU?: number;
   networkH_C?: number;
+  networkCAR?: number;
   existenceGate?: 0 | 1;
   gateStreak?: number;
   failureReason?: string;

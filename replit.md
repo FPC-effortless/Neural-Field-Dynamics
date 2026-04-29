@@ -18,7 +18,42 @@ The previous v12 used a hard top-K bottleneck which was unable to clear the **Ex
 
 `ALPHA_SLOW = 0.02` updates the per-neuron slow apical EMA `a_slow`, and `PU_LAG = 4` is the lag used by the Predictive Utility MI estimator. The legacy top-K path is still reachable by setting `ATTN_MODE = "topk"` for ablation experiments.
 
-Per-tick stats now expose `networkPU`, `networkH_C`, `existenceGate ∈ {0,1}`, `gateStreak`, and `failureReason`. Phase 0 (`PH0.gate`, `PH0.topk_baseline`, `PH0.no_global`, `PH0.no_temporal`) sits at the top of the experiment battery.
+Per-tick stats now expose `networkPU`, `networkH_C`, `networkCAR`, `existenceGate ∈ {0,1}`, `gateStreak`, and `failureReason`. Phase 0 (`PH0.gate`, `PH0.topk_baseline`, `PH0.no_global`, `PH0.no_temporal`) sits at the top of the experiment battery.
+
+### Post-B3 revision — coherence-amplifying global field
+
+B3 confirmed that the linear weighted average `G = Σ Cᵢ · aᵢ` was too weak to force consensus: neurons could satisfy the global term by cluster agreement without true global coherence, producing partial coupling without integration. The global field is therefore redefined to amplify consensus:
+
+```
+G = Σ Cᵢ · aᵢ²   /   (Σ Cᵢ · aᵢ + ε)
+```
+
+Confident, attended cells now weight quadratically: when the field is coherent, strong neurons pull `G` toward their consensus; when fragmented, the denominator shrinks so `(aᵢ − G)` grows, creating pressure to resolve disagreement. The implementation guards the denominator (sign-preserving, `ε = 1e-8`) and clamps `G ∈ [-4, 4]` for numerical safety.
+
+A new diagnostic — **CAR**, the Coherence Amplification Ratio — distinguishes genuine integration from accidental peaks:
+
+```
+H(C) = -Σ Cᵢ log(Cᵢ + 1e-8)
+CAR  = Φ / (1 - H(C)/Hₘₐₓ + ε),   Hₘₐₓ = log N
+```
+
+Large CAR ⇒ Φ is rising because the field genuinely integrates (high participation entropy). Small CAR ⇒ a few neurons synchronised by accident.
+
+The Existence-Gate failure-reason text now reports the metric furthest below its threshold (worst relative gap), so the dashboard `NO-GO` badge points at the primary blocker rather than the first metric checked.
+
+The default `POST /api/sweeps` body has been expanded to the post-B3 targeted Phase 0 sweep (3 × 4 × 3 × 3 × 3 = 324 combos):
+
+```json
+{
+  "TAU_ATT":        [0.7, 1.0, 1.5],
+  "GAMMA_GLOBAL":   [1.0, 1.5, 2.0, 3.0],
+  "DELTA_TEMPORAL": [0.2, 0.4, 0.6],
+  "BETA_ENTROPY":   [0.1, 0.3, 0.5],
+  "NOISE_SIGMA":    [0.01, 0.02, 0.05]
+}
+```
+
+The sweep cap has been raised from 64 to 400 combinations to accommodate this grid; per-combo ticks now cap at 50k (extend from 30k when Φ shows a rising trend).
 
 ---
 

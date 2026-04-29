@@ -5,6 +5,7 @@ const EXPORT_KEYS: Array<keyof Stats> = [
   "networkSC",
   "networkPU",
   "networkH_C",
+  "networkCAR",
   "existenceGate",
   "gateStreak",
   "networkMI",

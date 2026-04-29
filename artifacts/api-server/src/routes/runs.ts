@@ -581,17 +581,21 @@ router.post("/sweeps", (req, res) => {
     ticksPerCombo?: number;
     scale?: 81 | 810 | 81000;
   };
-  // Default sweep: hunt the soft attractor sweet spot.
+  // Default sweep: post-B3 expanded Phase 0 hunt for the Existence Gate.
+  // Coherence-amplifying global field + targeted ranges per the programme:
+  // 3 × 4 × 3 × 3 × 3 = 324 combos at the upper bound.
   const ranges: Record<string, number[]> = body.ranges ?? {
-    TAU_ATT: [0.4, 0.7, 1.0],
-    GAMMA_GLOBAL: [0.5, 1.0, 1.5],
-    BETA_ENTROPY: [0.1, 0.3],
+    TAU_ATT: [0.7, 1.0, 1.5],
+    GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
+    DELTA_TEMPORAL: [0.2, 0.4, 0.6],
+    BETA_ENTROPY: [0.1, 0.3, 0.5],
+    NOISE_SIGMA: [0.01, 0.02, 0.05],
   };
-  const ticksPerCombo = Math.min(Math.max(body.ticksPerCombo ?? 2500, 500), 20000);
+  const ticksPerCombo = Math.min(Math.max(body.ticksPerCombo ?? 2500, 500), 50000);
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
   const grid = cartesian(ranges);
-  if (grid.length === 0 || grid.length > 64) {
-    res.status(400).json({ error: "ranges must produce 1..64 combinations" });
+  if (grid.length === 0 || grid.length > 400) {
+    res.status(400).json({ error: "ranges must produce 1..400 combinations" });
     return;
   }
   const id = `s${nextSweepId++}`;

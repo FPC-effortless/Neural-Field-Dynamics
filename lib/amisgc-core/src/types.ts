@@ -137,6 +137,7 @@ export interface SimState {
   // v12 revision — soft attractor diagnostics
   networkPU: number;        // predictive usefulness MI(C ; future input)
   networkH_C: number;       // participation entropy of softmax C distribution
+  networkCAR: number;       // Coherence Amplification Ratio = Φ / (1 - H_C/H_max + ε)
   existenceGate: 0 | 1;     // 1 iff Φ>0.05 ∧ PU>0.1 ∧ S_C>0.1
   gateStreak: number;       // ticks the gate has been continuously open
   failureReason: string;    // empty when gate is open
@@ -268,6 +269,7 @@ export interface Stats {
   // v12 revision — exposed in stats for the dashboard
   networkPU: number;
   networkH_C: number;
+  networkCAR: number;
   existenceGate: 0 | 1;
   gateStreak: number;
   failureReason: string;

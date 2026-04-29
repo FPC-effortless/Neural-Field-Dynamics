@@ -165,6 +165,7 @@ export function createSim(
     networkAS: 0,
     networkPU: 0,
     networkH_C: 0,
+    networkCAR: 0,
     existenceGate: 0,
     gateStreak: 0,
     failureReason: "warming up",
@@ -421,16 +422,32 @@ export function simTick(sim: SimState, ctx: SimContext): number {
         sumE += expV[i] as number;
       }
       sumE = sumE || 1e-10;
-      // Shared global field G = Σ C_i · a_i, computed from the soft distribution
-      let G = 0;
+      // v12 revision (post-B3): coherence-amplifying global field
+      //   G = Σ C_i · a_i^2  /  (Σ C_i · a_i + ε)
+      // The linear weighted average tracked the field but did not force
+      // consensus. The amplifying form weights confident, attended cells
+      // quadratically; when the field is fragmented the denominator shrinks
+      // (creating pressure to resolve disagreement), when it is coherent
+      // strong neurons pull the field toward their consensus.
+      let Gnum = 0;
+      let Gden = 0;
       let HC = 0;
       for (let i = 0; i < N; i++) {
         const Ci = (expV[i] as number) / sumE;
         const n = ns[i] as Neuron;
         n.A = Ci;
-        G += Ci * n.a;
+        Gnum += Ci * n.a * n.a;
+        Gden += Ci * n.a;
         if (Ci > 1e-12) HC -= Ci * Math.log(Ci + 1e-8);
       }
+      // sign-preserving safe denominator + clamp on G to avoid numeric
+      // explosions when Σ C_i·a_i passes through zero.
+      const EPS_G = 1e-8;
+      const denomMag = Math.max(Math.abs(Gden), EPS_G);
+      const denomSafe = Gden >= 0 ? denomMag : -denomMag;
+      let G = Gnum / denomSafe;
+      if (G > 4) G = 4;
+      else if (G < -4) G = -4;
       sim.networkG = G;
       sim.networkH_C = HC;
 
@@ -1008,6 +1025,18 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     }
   }
   sim.networkPU = PU;
+  // Coherence Amplification Ratio (post-B3 diagnostic)
+  //   CAR = Φ / (1 - H_C/H_max + ε)
+  // Guards Φ against narrow accidental peaks: when Φ rises because the field
+  // genuinely integrates, participation entropy is high and CAR is large;
+  // when Φ rises because a few neurons synchronise by accident, H_C is low
+  // and CAR is small.
+  {
+    const Hmax = Math.log(Math.max(2, ctx.P.N));
+    const norm = Hmax > 0 ? sim.networkH_C / Hmax : 0;
+    const denom = 1 - norm + 1e-6;
+    sim.networkCAR = denom > 0 ? sim.networkPhi / denom : 0;
+  }
   // Existence Gate: Φ > 0.05 ∧ PU > 0.1 ∧ S_C > 0.1
   const gateOpen =
     sim.networkPhi > 0.05 && sim.networkPU > 0.1 && sim.networkSC > 0.1;
@@ -1018,10 +1047,23 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
   } else {
     sim.existenceGate = 0;
     sim.gateStreak = 0;
-    if (!(sim.networkPhi > 0.05)) sim.failureReason = "Φ below gate";
-    else if (!(sim.networkPU > 0.1)) sim.failureReason = "PU below gate";
-    else if (!(sim.networkSC > 0.1)) sim.failureReason = "S_C below gate";
-    else sim.failureReason = "Gate not met";
+    // Surface the *primary* failure reason — the metric furthest below its
+    // threshold relative to the threshold itself — so the dashboard NO-GO
+    // indicator points at the worst offender, not just the first.
+    const gaps: Array<[number, string]> = [
+      [(sim.networkPhi - 0.05) / 0.05, "Φ below gate"],
+      [(sim.networkPU - 0.1) / 0.1, "PU below gate"],
+      [(sim.networkSC - 0.1) / 0.1, "S_C below gate"],
+    ];
+    let worstGap = Infinity;
+    let worstReason = "Gate not met";
+    for (const [g, label] of gaps) {
+      if (g < 0 && g < worstGap) {
+        worstGap = g;
+        worstReason = label;
+      }
+    }
+    sim.failureReason = worstReason;
   }
 
   let phaseRegion = "DISORDERED";
@@ -1142,6 +1184,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     attractorCount: sim.attractorLibrary.length,
     networkPU: sim.networkPU,
     networkH_C: sim.networkH_C,
+    networkCAR: sim.networkCAR,
     existenceGate: sim.existenceGate,
     gateStreak: sim.gateStreak,
     failureReason: sim.failureReason,
