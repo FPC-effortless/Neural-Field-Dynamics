@@ -166,6 +166,9 @@ export interface RunDetail extends RunSummary {
 export interface CreateRunRequest {
   experimentId?: string;
   scale?: 81 | 810 | 81000;
+  // Optional override of total neuron count (rebuilds the simulator grid).
+  // Server clamps to [9, 102_400]; takes precedence over `scale` when set.
+  neurons?: number;
   ticks?: number;
   customParams?: Record<string, number | boolean>;
   type?: "experiment" | "arc";
@@ -284,6 +287,10 @@ export interface SweepCombo {
   finalPhi: number;
   finalSC: number;
   finalPU: number;
+  // Coherence Amplification Ratio: latest sample (finalCAR) and running max
+  // (bestCAR). Both are populated as combos stream progress.
+  finalCAR: number;
+  bestCAR: number;
   ticksDone: number;
   runId: string | null;
 }
@@ -295,6 +302,7 @@ export interface SweepDetail {
   completedAt: number | null;
   ticksPerCombo: number;
   scale: 81 | 810 | 81000;
+  neurons?: number;
   currentIndex: number;
   bestIndex: number;
   total: number;
@@ -305,6 +313,7 @@ export interface CreateSweepRequest {
   ranges?: Record<string, number[]>;
   ticksPerCombo?: number;
   scale?: 81 | 810 | 81000;
+  neurons?: number;
 }
 
 export const sweepApi = {
@@ -367,6 +376,7 @@ export interface BatchDetail {
   id: string;
   status: BatchStatus;
   scale: 81 | 810 | 81000;
+  neurons?: number;
   ticksPerExperiment: number | null;
   repeats: number;
   baseSeed?: number;
@@ -384,6 +394,7 @@ export interface CreateBatchRequest {
   phase?: string;
   all?: boolean;
   scale?: 81 | 810 | 81000;
+  neurons?: number;
   ticksPerExperiment?: number;
   repeats?: number;
   seed?: number;

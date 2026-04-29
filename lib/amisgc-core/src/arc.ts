@@ -1,7 +1,7 @@
 // ARC-mock benchmark: small grid puzzles encoded as bit sequences.
 import { TRANSFORMS, type Transform, makeArcTask } from "./tasks.js";
 import { createSim, simTick, calcStats, setTask } from "./sim.js";
-import { defaultParams } from "./params.js";
+import { defaultParams, paramsForNeurons } from "./params.js";
 import type { Stats } from "./types.js";
 
 export interface ArcSample {
@@ -39,6 +39,7 @@ function predictFromSim(input: number[]): number[] {
 
 export interface ArcOptions {
   scale?: 81 | 810 | 81000;
+  neurons?: number;
   numTasks?: number;
   trainTicksPerTask?: number;
   testInputs?: number;
@@ -52,6 +53,7 @@ export async function runArcBenchmark(
 ): Promise<ArcResult> {
   const {
     scale = 81,
+    neurons,
     numTasks = 20,
     trainTicksPerTask = 1500,
     testInputs = 3,
@@ -60,7 +62,10 @@ export async function runArcBenchmark(
     signal,
   } = opts;
 
-  const params = defaultParams(scale);
+  const params =
+    typeof neurons === "number" && Number.isFinite(neurons)
+      ? paramsForNeurons(neurons)
+      : defaultParams(scale);
   const { sim, ctx } = createSim(params);
 
   const samples: ArcSample[] = [];

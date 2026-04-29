@@ -19,8 +19,20 @@ export const ExperimentPicker = memo(function ExperimentPicker({
   const [selected, setSelected] = useState<string | null>(null);
   const [scale, setScale] = useState<81 | 810 | 81000>(81);
   const [overrideTicks, setOverrideTicks] = useState<string>("");
+  // Optional neuron-count override. Empty string ⇒ use the scale enum above.
+  const [overrideNeurons, setOverrideNeurons] = useState<string>("");
 
   const expById = new Map((experiments ?? []).map((e) => [e.id, e]));
+
+  const buildLaunchReq = (extra: Partial<CreateRunRequest> = {}): CreateRunRequest => {
+    const neuronsNum = overrideNeurons.trim() === "" ? undefined : Number(overrideNeurons);
+    const req: CreateRunRequest = { scale, ...extra };
+    if (overrideTicks) req.ticks = Number(overrideTicks);
+    if (typeof neuronsNum === "number" && Number.isFinite(neuronsNum)) {
+      req.neurons = neuronsNum;
+    }
+    return req;
+  };
   const sel = selected ? expById.get(selected) : undefined;
 
   return (
@@ -128,6 +140,31 @@ export const ExperimentPicker = memo(function ExperimentPicker({
                 </select>
               </div>
               <div className="flex items-center gap-1">
+                <span
+                  style={{ fontSize: 7, color: "#1a3a30", letterSpacing: 1 }}
+                  title="Optional override of total neuron count. Clamped to [9, 102 400]. Takes precedence over SCALE."
+                >
+                  NEURONS
+                </span>
+                <input
+                  type="number"
+                  min={9}
+                  max={102400}
+                  step={1}
+                  value={overrideNeurons}
+                  placeholder="auto"
+                  onChange={(e) => setOverrideNeurons(e.target.value)}
+                  style={{
+                    background: "#020c16",
+                    color: "#00ffc4",
+                    border: "1px solid #0f4a3a",
+                    fontSize: 9,
+                    padding: "2px 4px",
+                    width: 80,
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-1">
                 <span style={{ fontSize: 7, color: "#1a3a30", letterSpacing: 1 }}>TICKS</span>
                 <input
                   type="number"
@@ -146,13 +183,7 @@ export const ExperimentPicker = memo(function ExperimentPicker({
               </div>
               <button
                 disabled={launching}
-                onClick={() =>
-                  onLaunch({
-                    experimentId: sel.id,
-                    scale,
-                    ticks: overrideTicks ? Number(overrideTicks) : undefined,
-                  })
-                }
+                onClick={() => onLaunch(buildLaunchReq({ experimentId: sel.id }))}
                 style={{
                   background: launching ? "#0a2828" : "#00ffc4",
                   color: launching ? "#0f4a3a" : "#020c16",
@@ -189,11 +220,12 @@ export const ExperimentPicker = memo(function ExperimentPicker({
           <button
             disabled={launching}
             onClick={() =>
-              onLaunch({
-                type: "arc",
-                scale,
-                arc: { numTasks: 5, trainTicksPerTask: 600, testInputs: 3 },
-              })
+              onLaunch(
+                buildLaunchReq({
+                  type: "arc",
+                  arc: { numTasks: 5, trainTicksPerTask: 600, testInputs: 3 },
+                }),
+              )
             }
             style={{
               background: launching ? "#0a2828" : "#ffcc44",

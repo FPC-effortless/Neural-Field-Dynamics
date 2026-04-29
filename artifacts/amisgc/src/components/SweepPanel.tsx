@@ -26,10 +26,29 @@ function paramSummary(p: Record<string, number | boolean | string>): string {
     .join(" ");
 }
 
+// Phase 0 default grid — must match the server-side default in routes/runs.ts.
+// 3 × 4 × 3 × 3 × 3 = 324 combinations.
+const PHASE0_GRID = {
+  TAU_ATT: [0.7, 1.0, 1.5],
+  GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
+  DELTA_TEMPORAL: [0.2, 0.4, 0.6],
+  BETA_ENTROPY: [0.1, 0.3, 0.5],
+  NOISE_SIGMA: [0.01, 0.02, 0.05],
+};
+const PHASE0_TOTAL = Object.values(PHASE0_GRID).reduce((a, b) => a * b.length, 1);
+
+type SortMode = "CAR" | "STREAK" | "INDEX";
+
 export function SweepPanel({ open, onClose }: SweepPanelProps) {
   const [sweep, setSweep] = useState<SweepDetail | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Launch-form controls
+  const [scale, setScale] = useState<81 | 810 | 81000>(81);
+  const [neuronsStr, setNeuronsStr] = useState<string>("");
+  const [ticks, setTicks] = useState<number>(2500);
+  // Live sort for the combos table
+  const [sortMode, setSortMode] = useState<SortMode>("CAR");
 
   useEffect(() => {
     if (!open || !sweep?.id) return;
@@ -51,7 +70,19 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
     setLaunching(true);
     setError(null);
     try {
-      const { id } = await sweepApi.create({ ticksPerCombo: 2500, scale: 81 });
+      const neuronsNum = neuronsStr.trim() === "" ? undefined : Number(neuronsStr);
+      const body: {
+        ticksPerCombo: number;
+        scale: 81 | 810 | 81000;
+        neurons?: number;
+      } = {
+        ticksPerCombo: ticks,
+        scale,
+      };
+      if (typeof neuronsNum === "number" && Number.isFinite(neuronsNum)) {
+        body.neurons = neuronsNum;
+      }
+      const { id } = await sweepApi.create(body);
       const detail = await sweepApi.get(id);
       setSweep(detail);
     } catch (e) {
@@ -68,6 +99,11 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
     } catch {
       /* ignore */
     }
+  };
+
+  const reset = () => {
+    setSweep(null);
+    setError(null);
   };
 
   const best = useMemo(() => {
@@ -96,7 +132,7 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         style={{
           background: "#020c16",
           border: "1px solid #00ffc4",
-          maxWidth: 880,
+          maxWidth: 980,
           width: "100%",
           maxHeight: "90vh",
           overflow: "auto",
@@ -106,7 +142,7 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
       >
         <div className="flex items-center justify-between mb-3">
           <span style={{ fontSize: 12, color: "#00ffc4", letterSpacing: 3, fontWeight: 700 }}>
-            ⚡ AUTO-SWEEP · soft attractor parameter search
+            ⚡ AUTO-SWEEP · Phase 0 Existence-Gate hunt
           </span>
           <button
             onClick={onClose}
@@ -124,11 +160,61 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         </div>
 
         {!sweep ? (
-          <Panel title="DEFAULT GRID" accent="#00ffc4">
-            <div style={{ fontSize: 9, color: "#0d7060", marginBottom: 8, lineHeight: 1.6 }}>
-              Cartesian product over τ × γ × β with default δ/σ.<br />
-              τ_att ∈ {"{0.4, 0.7, 1.0}"} · γ_global ∈ {"{0.5, 1.0, 1.5}"} · β_entropy ∈ {"{0.1, 0.3}"} = 18 combos × 2500 ticks each.
+          <Panel title="AUTO SWEEP · 324-COMBO PHASE 0 GRID" accent="#00ffc4">
+            <div style={{ fontSize: 9, color: "#0d7060", marginBottom: 10, lineHeight: 1.6 }}>
+              One-click launch of the full Phase 0 hunt for the Existence Gate
+              (Φ&gt;0.05 ∧ PU&gt;0.1 ∧ S_C&gt;0.1 sustained ≥1000 ticks).<br />
+              τ_att ∈ {"{0.7, 1.0, 1.5}"} · γ_global ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
+              δ_temporal ∈ {"{0.2, 0.4, 0.6}"} · β_entropy ∈ {"{0.1, 0.3, 0.5}"} ·
+              σ_noise ∈ {"{0.01, 0.02, 0.05}"} = <b>{PHASE0_TOTAL} combos</b>.
+              <br />
+              Combos are live-sorted by CAR (Φ / (1 − H_C/H_max)) so the
+              coherence-amplifying leaders surface first.
             </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <FieldLabel label="SCALE">
+                <select
+                  value={scale}
+                  onChange={(e) => setScale(Number(e.target.value) as 81 | 810 | 81000)}
+                  style={selectStyle}
+                >
+                  <option value={81}>81 (G=9)</option>
+                  <option value={810}>810 (G=29)</option>
+                  <option value={81000}>81 000 (G=285)</option>
+                </select>
+              </FieldLabel>
+              <FieldLabel label="NEURONS (override)">
+                <input
+                  type="number"
+                  min={9}
+                  max={102400}
+                  step={1}
+                  value={neuronsStr}
+                  onChange={(e) => setNeuronsStr(e.target.value)}
+                  placeholder="—"
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#0d7060", marginTop: 2 }}>
+                  Optional · 9 – 102 400 · overrides scale
+                </div>
+              </FieldLabel>
+              <FieldLabel label="TICKS PER COMBO">
+                <input
+                  type="number"
+                  min={500}
+                  max={50000}
+                  step={500}
+                  value={ticks}
+                  onChange={(e) => setTicks(Math.max(500, Math.min(50000, Number(e.target.value) || 0)))}
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#0d7060", marginTop: 2 }}>
+                  500 – 50 000
+                </div>
+              </FieldLabel>
+            </div>
+
             <button
               onClick={start}
               disabled={launching}
@@ -144,7 +230,7 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
                 cursor: launching ? "wait" : "pointer",
               }}
             >
-              {launching ? "STARTING…" : "▶ START SWEEP"}
+              {launching ? "STARTING…" : `▶ START AUTO SWEEP (${PHASE0_TOTAL} combos)`}
             </button>
             {error ? (
               <div style={{ marginTop: 8, color: "#ff4477", fontSize: 9 }}>{error}</div>
@@ -158,24 +244,44 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
             >
               <div className="flex items-center justify-between mb-2">
                 <span style={{ fontSize: 9, color: "#0d7060" }}>
-                  PROGRESS {Math.min(sweep.currentIndex + 1, sweep.total)} / {sweep.total}
+                  PROGRESS {Math.min(sweep.currentIndex + 1, sweep.total)} / {sweep.total} ·
+                  {" "}scale {sweep.scale}
+                  {sweep.neurons ? ` · neurons ${sweep.neurons}` : ""} ·
+                  {" "}{sweep.ticksPerCombo} t/combo
                 </span>
-                {sweep.status === "running" || sweep.status === "pending" ? (
-                  <button
-                    onClick={cancel}
-                    style={{
-                      background: "transparent",
-                      border: "1px solid #ff4477",
-                      color: "#ff4477",
-                      padding: "3px 10px",
-                      fontSize: 8,
-                      letterSpacing: 2,
-                      borderRadius: 2,
-                    }}
-                  >
-                    ✕ CANCEL
-                  </button>
-                ) : null}
+                <div style={{ display: "flex", gap: 6 }}>
+                  {sweep.status === "running" || sweep.status === "pending" ? (
+                    <button
+                      onClick={cancel}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid #ff4477",
+                        color: "#ff4477",
+                        padding: "3px 10px",
+                        fontSize: 8,
+                        letterSpacing: 2,
+                        borderRadius: 2,
+                      }}
+                    >
+                      ✕ CANCEL
+                    </button>
+                  ) : (
+                    <button
+                      onClick={reset}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid #0f4a3a",
+                        color: "#00ffc4",
+                        padding: "3px 10px",
+                        fontSize: 8,
+                        letterSpacing: 2,
+                        borderRadius: 2,
+                      }}
+                    >
+                      ↺ NEW SWEEP
+                    </button>
+                  )}
+                </div>
               </div>
               <div
                 style={{
@@ -205,17 +311,100 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
                 </div>
                 <div style={{ fontSize: 8, color: "#0d7060", letterSpacing: 1 }}>
                   Φ {fmt(best.finalPhi)} · S_C {fmt(best.finalSC)} · PU {fmt(best.finalPU)} ·
-                  STREAK {best.gateStreak}
+                  CAR {fmt(best.bestCAR)} · STREAK {best.gateStreak}
                 </div>
               </Panel>
             ) : null}
 
             <Panel title="ALL COMBOS" accent="#0f4a3a">
-              <ComboTable combos={sweep.combos} bestIndex={sweep.bestIndex} />
+              <SortControls value={sortMode} onChange={setSortMode} />
+              <ComboTable
+                combos={sweep.combos}
+                bestIndex={sweep.bestIndex}
+                sortMode={sortMode}
+              />
             </Panel>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "#0a1620",
+  border: "1px solid #0f4a3a",
+  color: "#00ffc4",
+  fontSize: 10,
+  padding: "4px 6px",
+  borderRadius: 2,
+  fontFamily: "monospace",
+};
+
+const selectStyle: React.CSSProperties = {
+  ...inputStyle,
+  cursor: "pointer",
+};
+
+function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: "block" }}>
+      <div
+        style={{
+          fontSize: 8,
+          color: "#0d7060",
+          letterSpacing: 2,
+          marginBottom: 3,
+          fontWeight: 700,
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </label>
+  );
+}
+
+function SortControls({
+  value,
+  onChange,
+}: {
+  value: SortMode;
+  onChange: (v: SortMode) => void;
+}) {
+  const opts: Array<{ k: SortMode; label: string }> = [
+    { k: "CAR", label: "CAR ↓" },
+    { k: "STREAK", label: "STREAK ↓" },
+    { k: "INDEX", label: "INDEX ↑" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+      <span style={{ fontSize: 8, color: "#0d7060", letterSpacing: 2, alignSelf: "center" }}>
+        SORT:
+      </span>
+      {opts.map((o) => {
+        const active = value === o.k;
+        return (
+          <button
+            key={o.k}
+            onClick={() => onChange(o.k)}
+            style={{
+              background: active ? "#00ffc4" : "transparent",
+              color: active ? "#020c16" : "#00ffc4",
+              border: "1px solid #0f4a3a",
+              padding: "2px 8px",
+              fontSize: 8,
+              letterSpacing: 1,
+              borderRadius: 2,
+              cursor: "pointer",
+              fontWeight: active ? 700 : 400,
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -244,26 +433,55 @@ function updateCombo(
 function ComboTable({
   combos,
   bestIndex,
+  sortMode,
 }: {
   combos: SweepCombo[];
   bestIndex: number;
+  sortMode: SortMode;
 }) {
+  // Stable sort: copy then sort by the active key, with tie-breakers that
+  // keep the table well-ordered when many combos haven't reported yet.
+  const ordered = useMemo(() => {
+    const arr = combos.slice();
+    if (sortMode === "INDEX") {
+      arr.sort((a, b) => a.index - b.index);
+    } else if (sortMode === "STREAK") {
+      arr.sort(
+        (a, b) =>
+          b.gateStreak - a.gateStreak ||
+          b.bestCAR - a.bestCAR ||
+          b.finalPhi - a.finalPhi ||
+          a.index - b.index,
+      );
+    } else {
+      arr.sort(
+        (a, b) =>
+          b.bestCAR - a.bestCAR ||
+          b.gateStreak - a.gateStreak ||
+          b.finalPhi - a.finalPhi ||
+          a.index - b.index,
+      );
+    }
+    return arr;
+  }, [combos, sortMode]);
+
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
       <table style={{ width: "100%", fontSize: 8, color: "#0d7060", borderCollapse: "collapse" }}>
-        <thead>
+        <thead style={{ position: "sticky", top: 0, background: "#020c16" }}>
           <tr style={{ borderBottom: "1px solid #0a2828", color: "#00ffc4", letterSpacing: 1 }}>
             <th style={{ textAlign: "left", padding: "4px 6px" }}>#</th>
             <th style={{ textAlign: "left", padding: "4px 6px" }}>PARAMS</th>
             <th style={{ textAlign: "right", padding: "4px 6px" }}>Φ</th>
             <th style={{ textAlign: "right", padding: "4px 6px" }}>S_C</th>
             <th style={{ textAlign: "right", padding: "4px 6px" }}>PU</th>
+            <th style={{ textAlign: "right", padding: "4px 6px" }}>CAR</th>
             <th style={{ textAlign: "right", padding: "4px 6px" }}>STREAK</th>
             <th style={{ textAlign: "left", padding: "4px 6px" }}>STATUS</th>
           </tr>
         </thead>
         <tbody>
-          {combos.map((c) => {
+          {ordered.map((c) => {
             const isBest = c.index === bestIndex && c.gateStreak > 0;
             return (
               <tr
@@ -284,6 +502,7 @@ function ComboTable({
                 <td style={{ padding: "3px 6px", textAlign: "right" }}>{fmt(c.finalPhi)}</td>
                 <td style={{ padding: "3px 6px", textAlign: "right" }}>{fmt(c.finalSC)}</td>
                 <td style={{ padding: "3px 6px", textAlign: "right" }}>{fmt(c.finalPU)}</td>
+                <td style={{ padding: "3px 6px", textAlign: "right" }}>{fmt(c.bestCAR)}</td>
                 <td style={{ padding: "3px 6px", textAlign: "right" }}>{c.gateStreak}</td>
                 <td style={{ padding: "3px 6px" }}>
                   <Pill

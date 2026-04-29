@@ -97,6 +97,21 @@ export function defaultParams(scale: 81 | 810 | 81000 = 81): Params {
   if (scale === 81) G = 9;
   else if (scale === 810) G = Math.round(Math.sqrt(810));
   else G = Math.round(Math.sqrt(81000));
+  return paramsForGrid(G);
+}
+
+// Hard ceilings to keep memory/CPU sane when callers pass arbitrary neuron
+// counts (e.g. from the UI). G ∈ [3, 320] ⇒ N ∈ [9, ~102_400].
+const NEURONS_MIN = 9;
+const NEURONS_MAX = 102_400;
+
+export function paramsForNeurons(neurons: number): Params {
+  const clamped = Math.max(NEURONS_MIN, Math.min(NEURONS_MAX, Math.floor(neurons)));
+  const G = Math.max(3, Math.round(Math.sqrt(clamped)));
+  return paramsForGrid(G);
+}
+
+export function paramsForGrid(G: number): Params {
   const N = G * G;
   const inputCount = Math.max(7, Math.floor(N / 12));
   const IN_IDS: number[] = [];

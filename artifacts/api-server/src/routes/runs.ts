@@ -24,6 +24,9 @@ interface RunRecord {
   id: string;
   experimentId: string | null;
   scale: 81 | 810 | 81000;
+  // Optional neuron-count override (rebuilds the simulator grid). When set, it
+  // takes precedence over `scale` for sizing.
+  neurons?: number;
   status: "pending" | "running" | "completed" | "cancelled" | "error";
   createdAt: number;
   startedAt: number | null;
@@ -52,6 +55,15 @@ const runs = new Map<string, RunRecord>();
 let nextId = 1;
 const MAX_HISTORY = 240;
 const MAX_RUNS = 50;
+
+// Clamp arbitrary neuron-count overrides from the UI/clients to a safe range.
+// Returns undefined if no override was supplied (caller falls back to scale).
+const NEURONS_MIN = 9;
+const NEURONS_MAX = 102_400;
+function clampNeurons(n: unknown): number | undefined {
+  if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
+  return Math.max(NEURONS_MIN, Math.min(NEURONS_MAX, Math.floor(n)));
+}
 
 function broadcast(run: RunRecord, event: string, data: unknown): void {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -101,6 +113,7 @@ router.post("/runs", (req, res) => {
   const body = (req.body ?? {}) as {
     experimentId?: string;
     scale?: 81 | 810 | 81000;
+    neurons?: number;
     ticks?: number;
     customParams?: Record<string, number | boolean>;
     type?: "experiment" | "arc";
@@ -109,6 +122,7 @@ router.post("/runs", (req, res) => {
   };
   const id = `r${nextId++}`;
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const neurons = clampNeurons(body.neurons);
   const isArc = body.type === "arc";
 
   const exp = body.experimentId ? findExperiment(body.experimentId) : undefined;
@@ -119,6 +133,7 @@ router.post("/runs", (req, res) => {
     id,
     experimentId: body.experimentId ?? null,
     scale,
+    ...(neurons !== undefined ? { neurons } : {}),
     status: "pending",
     createdAt: Date.now(),
     startedAt: null,
@@ -149,6 +164,7 @@ router.post("/runs", (req, res) => {
 
     runArcBenchmark({
       scale,
+      ...(neurons !== undefined ? { neurons } : {}),
       numTasks: body.arc?.numTasks ?? 20,
       trainTicksPerTask: body.arc?.trainTicksPerTask ?? 1500,
       testInputs: body.arc?.testInputs ?? 3,
@@ -199,6 +215,7 @@ router.post("/runs", (req, res) => {
 
   const handle = startRun({
     scale,
+    ...(neurons !== undefined ? { neurons } : {}),
     ...(body.experimentId ? { experimentId: body.experimentId } : {}),
     ticks,
     ...(body.customParams ? { customParams: body.customParams as Record<string, never> } : {}),
@@ -340,6 +357,11 @@ interface SweepCombo {
   finalPhi: number;
   finalSC: number;
   finalPU: number;
+  // Coherence Amplification Ratio (Φ / (1 − H_C/H_max + ε)). The sweep table
+  // surfaces both the *current* CAR (last sample) and the running max so the
+  // UI can sort live by which combos are amplifying coherence the most.
+  finalCAR: number;
+  bestCAR: number;
   ticksDone: number;
   runId: string | null;
 }
@@ -351,6 +373,9 @@ interface SweepRecord {
   completedAt: number | null;
   ticksPerCombo: number;
   scale: 81 | 810 | 81000;
+  // Optional neuron-count override for every combo in this sweep. When set it
+  // takes precedence over `scale` when sizing the simulator grid.
+  neurons?: number;
   combos: SweepCombo[];
   currentIndex: number;
   bestIndex: number;
@@ -406,7 +431,14 @@ function loadPersistedSweeps(): void {
         completedAt: data.completedAt ?? Date.now(),
         ticksPerCombo: data.ticksPerCombo,
         scale: data.scale,
-        combos: data.combos,
+        ...(typeof (data as { neurons?: number }).neurons === "number"
+          ? { neurons: (data as { neurons: number }).neurons }
+          : {}),
+        combos: data.combos.map((c) => ({
+          ...c,
+          finalCAR: typeof c.finalCAR === "number" ? c.finalCAR : 0,
+          bestCAR: typeof c.bestCAR === "number" ? c.bestCAR : 0,
+        })),
         currentIndex: data.currentIndex,
         bestIndex: data.bestIndex,
         cancelled: reloadStatus === "cancelled",
@@ -460,6 +492,16 @@ function cartesian(
   return acc;
 }
 
+// "Better" = larger gateStreak first, then higher max-CAR, then higher Φ,
+// then higher PU. CAR is the new tiebreaker because the UI sorts on it
+// live and we want the surface "best" to track the table's leader.
+function isBetterCombo(a: SweepCombo, b: SweepCombo): boolean {
+  if (a.gateStreak !== b.gateStreak) return a.gateStreak > b.gateStreak;
+  if (a.bestCAR !== b.bestCAR) return a.bestCAR > b.bestCAR;
+  if (a.finalPhi !== b.finalPhi) return a.finalPhi > b.finalPhi;
+  return a.finalPU > b.finalPU;
+}
+
 function serializeSweep(s: SweepRecord) {
   return {
     id: s.id,
@@ -468,6 +510,7 @@ function serializeSweep(s: SweepRecord) {
     completedAt: s.completedAt,
     ticksPerCombo: s.ticksPerCombo,
     scale: s.scale,
+    ...(s.neurons !== undefined ? { neurons: s.neurons } : {}),
     currentIndex: s.currentIndex,
     bestIndex: s.bestIndex,
     total: s.combos.length,
@@ -493,6 +536,7 @@ async function runSweepCombo(
       id,
       experimentId: `sweep:${s.id}:${combo.index}`,
       scale: s.scale,
+      ...(s.neurons !== undefined ? { neurons: s.neurons } : {}),
       status: "pending",
       createdAt: Date.now(),
       startedAt: null,
@@ -513,6 +557,7 @@ async function runSweepCombo(
 
     const handle = startRun({
       scale: s.scale,
+      ...(s.neurons !== undefined ? { neurons: s.neurons } : {}),
       ticks: s.ticksPerCombo,
       customParams: combo.params as Record<string, never>,
       onStart: (info) => {
@@ -529,6 +574,13 @@ async function runSweepCombo(
         combo.finalPhi = e.stats.networkPhi;
         combo.finalSC = e.stats.networkSC;
         combo.finalPU = e.stats.networkPU ?? 0;
+        const car = e.stats.networkCAR ?? 0;
+        combo.finalCAR = car;
+        if (Number.isFinite(car) && car > combo.bestCAR) combo.bestCAR = car;
+        // Live-update bestIndex on every sample so the UI's CAR-sorted view
+        // surfaces leaders before any combo finishes.
+        const cur = s.combos[s.bestIndex];
+        if (!cur || isBetterCombo(combo, cur)) s.bestIndex = combo.index;
         if (record.history.length === 0 || e.t - (record.history.at(-1)?.t ?? 0) >= 200) {
           record.history.push({ t: e.t, stats: e.stats });
           if (record.history.length > MAX_HISTORY) record.history.shift();
@@ -546,16 +598,8 @@ async function runSweepCombo(
         record.completedAt = Date.now();
         record.status = "completed";
         combo.status = "completed";
-        // Update best by gateStreak (tiebreaker: higher Φ then higher PU)
         const cur = s.combos[s.bestIndex];
-        const better =
-          !cur ||
-          combo.gateStreak > cur.gateStreak ||
-          (combo.gateStreak === cur.gateStreak && combo.finalPhi > cur.finalPhi) ||
-          (combo.gateStreak === cur.gateStreak &&
-            combo.finalPhi === cur.finalPhi &&
-            combo.finalPU > cur.finalPU);
-        if (better) s.bestIndex = combo.index;
+        if (!cur || isBetterCombo(combo, cur)) s.bestIndex = combo.index;
         persistSweep(s);
         broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
         resolve();
@@ -580,6 +624,7 @@ router.post("/sweeps", (req, res) => {
     ranges?: Record<string, number[]>;
     ticksPerCombo?: number;
     scale?: 81 | 810 | 81000;
+    neurons?: number;
   };
   // Default sweep: post-B3 expanded Phase 0 hunt for the Existence Gate.
   // Coherence-amplifying global field + targeted ranges per the programme:
@@ -593,6 +638,7 @@ router.post("/sweeps", (req, res) => {
   };
   const ticksPerCombo = Math.min(Math.max(body.ticksPerCombo ?? 2500, 500), 50000);
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const neurons = clampNeurons(body.neurons);
   const grid = cartesian(ranges);
   if (grid.length === 0 || grid.length > 400) {
     res.status(400).json({ error: "ranges must produce 1..400 combinations" });
@@ -606,6 +652,7 @@ router.post("/sweeps", (req, res) => {
     completedAt: null,
     ticksPerCombo,
     scale,
+    ...(neurons !== undefined ? { neurons } : {}),
     combos: grid.map((p, i) => ({
       index: i,
       params: { ATTN_MODE: "soft", USE_BOTTLENECK: false, ...p },
@@ -615,6 +662,8 @@ router.post("/sweeps", (req, res) => {
       finalPhi: 0,
       finalSC: 0,
       finalPU: 0,
+      finalCAR: 0,
+      bestCAR: 0,
       ticksDone: 0,
       runId: null,
     })),
@@ -750,6 +799,8 @@ interface BatchRecord {
   id: string;
   status: "pending" | "running" | "completed" | "cancelled" | "interrupted";
   scale: 81 | 810 | 81000;
+  // Optional neuron-count override applied to every item/repeat in this batch.
+  neurons?: number;
   ticksPerExperiment: number | null;
   repeats: number;
   // Base seed; per-repeat seeds derived as deriveSeed(baseSeed, item.index, r).
@@ -823,6 +874,9 @@ function loadPersistedBatches(): void {
         id: data.id,
         status: reloadStatus,
         scale: data.scale,
+        ...(typeof (data as { neurons?: number }).neurons === "number"
+          ? { neurons: (data as { neurons: number }).neurons }
+          : {}),
         ticksPerExperiment: data.ticksPerExperiment,
         repeats: data.repeats,
         baseSeed: typeof data.baseSeed === "number" ? data.baseSeed : 0,
@@ -885,6 +939,7 @@ function serializeBatch(b: BatchRecord) {
     id: b.id,
     status: b.status,
     scale: b.scale,
+    ...(b.neurons !== undefined ? { neurons: b.neurons } : {}),
     ticksPerExperiment: b.ticksPerExperiment,
     repeats: b.repeats,
     baseSeed: b.baseSeed,
@@ -961,6 +1016,7 @@ async function runBatchItem(
 
       const handle = startRun({
         scale: b.scale,
+        ...(b.neurons !== undefined ? { neurons: b.neurons } : {}),
         experimentId: exp.id,
         ticks,
         seed: seedForRun,
@@ -1030,6 +1086,7 @@ router.post("/batches", (req, res) => {
     phase?: string;
     all?: boolean;
     scale?: 81 | 810 | 81000;
+    neurons?: number;
     ticksPerExperiment?: number;
     repeats?: number;
     seed?: number;
@@ -1047,6 +1104,7 @@ router.post("/batches", (req, res) => {
     return;
   }
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const neurons = clampNeurons(body.neurons);
   const repeats = Math.min(Math.max(body.repeats ?? 1, 1), 5);
   const ticksPerExperiment =
     typeof body.ticksPerExperiment === "number"
@@ -1084,6 +1142,7 @@ router.post("/batches", (req, res) => {
     id,
     status: "pending",
     scale,
+    ...(neurons !== undefined ? { neurons } : {}),
     ticksPerExperiment,
     repeats,
     baseSeed,
@@ -1484,6 +1543,7 @@ router.post("/batches/:id/rerun", (req, res) => {
     id,
     status: "pending",
     scale: src.scale,
+    ...(src.neurons !== undefined ? { neurons: src.neurons } : {}),
     ticksPerExperiment: src.ticksPerExperiment,
     repeats,
     baseSeed,
@@ -1589,6 +1649,9 @@ function serializeRun(r: RunRecord, full: boolean) {
     id: r.id,
     experimentId: r.experimentId,
     scale: r.scale,
+    ...(r.neurons !== undefined ? { neurons: r.neurons } : {}),
+    // Effective grid size as actually built by the simulator (N = G*G).
+    ...(r.start ? { N: r.start.N, G: Math.round(Math.sqrt(r.start.N)) } : {}),
     status: r.status,
     ticks: r.ticks,
     ticksDone: r.ticksDone,

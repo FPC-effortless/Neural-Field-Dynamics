@@ -41,21 +41,37 @@ function statusColor(status: BatchItem["status"], passed: boolean): string {
   return "#0d7060";
 }
 
+// Form-state-aware preset builder. The runtime knobs (scale/neurons/ticks)
+// come from the panel's launch form so all presets use the same overrides.
+interface BatchFormOverrides {
+  scale: 81 | 810 | 81000;
+  neurons?: number;
+  ticksPerExperiment?: number;
+}
+
 function presetBody(
   kind: "all" | "phase" | "core" | "phase0",
+  overrides: BatchFormOverrides,
   phase?: string,
   groups?: PhaseGroup[],
 ): CreateBatchRequest {
-  if (kind === "all") return { all: true, scale: 81, repeats: 1 };
-  if (kind === "phase0") return { phase: "PH0", scale: 81, repeats: 2 };
-  if (kind === "phase" && phase) return { phase, scale: 81, repeats: 1 };
+  const base: CreateBatchRequest = {
+    scale: overrides.scale,
+    ...(overrides.neurons !== undefined ? { neurons: overrides.neurons } : {}),
+    ...(overrides.ticksPerExperiment !== undefined
+      ? { ticksPerExperiment: overrides.ticksPerExperiment }
+      : {}),
+  };
+  if (kind === "all") return { ...base, all: true, repeats: 1 };
+  if (kind === "phase0") return { ...base, phase: "PH0", repeats: 2 };
+  if (kind === "phase" && phase) return { ...base, phase, repeats: 1 };
   if (kind === "core" && groups) {
     const ids = groups
       .filter((g) => g.phase.startsWith("C") || g.phase === "PH0")
       .flatMap((g) => g.experimentIds);
-    return { experimentIds: ids, scale: 81, repeats: 1 };
+    return { ...base, experimentIds: ids, repeats: 1 };
   }
-  return { all: true, scale: 81, repeats: 1 };
+  return { ...base, all: true, repeats: 1 };
 }
 
 export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
@@ -63,6 +79,10 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phaseFilter, setPhaseFilter] = useState<string>("");
+  // Launch-form overrides shared by all presets (scale, neuron count, ticks).
+  const [scale, setScale] = useState<81 | 810 | 81000>(81);
+  const [neuronsStr, setNeuronsStr] = useState<string>("");
+  const [ticksStr, setTicksStr] = useState<string>("");
   const [past, setPast] = useState<BatchDetail[]>([]);
   const [diffWith, setDiffWith] = useState<string>("");
   const [diffResult, setDiffResult] = useState<DiffResponse | null>(null);
@@ -253,6 +273,20 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
 
   const phaseOptions = useMemo(() => groups ?? [], [groups]);
 
+  const overrides = useMemo<BatchFormOverrides>(() => {
+    const neuronsNum = neuronsStr.trim() === "" ? undefined : Number(neuronsStr);
+    const ticksNum = ticksStr.trim() === "" ? undefined : Number(ticksStr);
+    return {
+      scale,
+      ...(typeof neuronsNum === "number" && Number.isFinite(neuronsNum)
+        ? { neurons: neuronsNum }
+        : {}),
+      ...(typeof ticksNum === "number" && Number.isFinite(ticksNum)
+        ? { ticksPerExperiment: ticksNum }
+        : {}),
+    };
+  }, [scale, neuronsStr, ticksStr]);
+
   if (!open) return null;
 
   return (
@@ -309,25 +343,80 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
               measured value, and ± std are reported per experiment.
             </div>
 
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 10,
+                marginBottom: 10,
+                padding: 8,
+                background: "rgba(0,0,0,0.3)",
+                border: "1px solid #5a4a1a",
+                borderRadius: 2,
+              }}
+            >
+              <BatchField label="SCALE">
+                <select
+                  value={scale}
+                  onChange={(e) => setScale(Number(e.target.value) as 81 | 810 | 81000)}
+                  style={batchInputStyle}
+                >
+                  <option value={81}>81 (G=9)</option>
+                  <option value={810}>810 (G=29)</option>
+                  <option value={81000}>81 000 (G=285)</option>
+                </select>
+              </BatchField>
+              <BatchField label="NEURONS (override)">
+                <input
+                  type="number"
+                  min={9}
+                  max={102400}
+                  step={1}
+                  value={neuronsStr}
+                  onChange={(e) => setNeuronsStr(e.target.value)}
+                  placeholder="auto"
+                  style={batchInputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#5a4a1a", marginTop: 2 }}>
+                  9 – 102 400 · overrides scale
+                </div>
+              </BatchField>
+              <BatchField label="TICKS / EXPERIMENT">
+                <input
+                  type="number"
+                  min={100}
+                  max={200000}
+                  step={100}
+                  value={ticksStr}
+                  onChange={(e) => setTicksStr(e.target.value)}
+                  placeholder="experiment default"
+                  style={batchInputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#5a4a1a", marginTop: 2 }}>
+                  100 – 200 000 · blank = use each experiment's own
+                </div>
+              </BatchField>
+            </div>
+
             <div className="flex flex-wrap gap-2 mb-3">
               <PresetButton
                 label="▶ RUN PHASE 0 SWEEP (×2)"
                 desc="4 PH0 experiments × 2 repeats"
-                onClick={() => start(presetBody("phase0"))}
+                onClick={() => start(presetBody("phase0", overrides))}
                 disabled={launching}
                 accent="#00ffc4"
               />
               <PresetButton
                 label="▶ RUN ALL CORE (PH0–C5)"
                 desc="Phase 0 + CORE-1…6 attractor stack"
-                onClick={() => start(presetBody("core", undefined, groups))}
+                onClick={() => start(presetBody("core", overrides, undefined, groups))}
                 disabled={launching || !groups}
                 accent="#aa88ff"
               />
               <PresetButton
                 label="▶ RUN EVERYTHING"
                 desc="All registered experiments × 1"
-                onClick={() => start(presetBody("all"))}
+                onClick={() => start(presetBody("all", overrides))}
                 disabled={launching}
                 accent="#ffd060"
               />
@@ -357,7 +446,10 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                   ))}
                 </select>
                 <button
-                  onClick={() => phaseFilter && start({ phase: phaseFilter, scale: 81, repeats: 1 })}
+                  onClick={() =>
+                    phaseFilter &&
+                    start(presetBody("phase", overrides, phaseFilter, groups))
+                  }
                   disabled={launching || !phaseFilter}
                   style={{
                     background: "#ffd060",
@@ -408,6 +500,18 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                   PROGRESS {batch.totalCompleted} / {batch.total} · PASSED{" "}
                   <span style={{ color: "#00ffc4" }}>{batch.totalPassed}</span> · REPEATS{" "}
                   {batch.repeats} · SCALE {batch.scale}
+                  {batch.neurons ? (
+                    <>
+                      {" "}· NEURONS{" "}
+                      <span style={{ color: "#ffd060" }}>{batch.neurons}</span>
+                    </>
+                  ) : null}
+                  {batch.ticksPerExperiment ? (
+                    <>
+                      {" "}· TICKS{" "}
+                      <span style={{ color: "#ffd060" }}>{batch.ticksPerExperiment}</span>
+                    </>
+                  ) : null}
                   {typeof batch.baseSeed === "number" ? (
                     <>
                       {" "}
@@ -568,6 +672,36 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
         )}
       </div>
     </div>
+  );
+}
+
+const batchInputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "#020c16",
+  color: "#ffd060",
+  border: "1px solid #5a4a1a",
+  fontSize: 10,
+  padding: "4px 6px",
+  borderRadius: 2,
+  fontFamily: "monospace",
+};
+
+function BatchField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: "block" }}>
+      <div
+        style={{
+          fontSize: 8,
+          color: "#5a4a1a",
+          letterSpacing: 2,
+          marginBottom: 3,
+          fontWeight: 700,
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </label>
   );
 }
 

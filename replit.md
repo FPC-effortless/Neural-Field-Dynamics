@@ -55,6 +55,33 @@ The default `POST /api/sweeps` body has been expanded to the post-B3 targeted Ph
 
 The sweep cap has been raised from 64 to 400 combinations to accommodate this grid; per-combo ticks now cap at 50k (extend from 30k when Φ shows a rising trend).
 
+### AUTO SWEEP UI (April 2026)
+
+The dashboard's **⚡ AUTO SWEEP** header button now opens a one-click launcher for the full 324-combo Phase 0 grid. The launch form exposes:
+
+- `SCALE` — 81 / 810 / 81 000 (G ∈ {9, 29, 285})
+- `NEURONS (override)` — optional explicit neuron count, clamped server-side to `[9, 102 400]`. When set, the simulator grid is rebuilt for `G = round(√neurons)` and overrides `SCALE`.
+- `TICKS PER COMBO` — 500 – 50 000
+
+While the sweep runs, the combos table reports a new `CAR` column (max Coherence Amplification Ratio seen so far) and supports live sorting by `CAR ↓` (default), `STREAK ↓`, or `INDEX ↑`. The "best combo" tiebreaker is now `gateStreak → bestCAR → Φ → PU` so the highlighted ★ row tracks the table's CAR-sorted leader.
+
+### Neuron-count override everywhere
+
+Every entry point that launches a simulator run accepts an optional `neurons` field that takes precedence over `scale`:
+
+- `POST /api/runs`  — single experiment or ARC run
+- `POST /api/sweeps` — applied to every combo in the sweep
+- `POST /api/batches` — applied to every item × repeat
+- `POST /api/batches/:id/rerun` — preserved from the source batch
+
+UI surfaces:
+
+- **Experiment battery**: a `NEURONS` input next to `SCALE` / `TICKS`
+- **Auto-sweep launcher**: a `NEURONS (override)` field in the form
+- **Experiment battery panel** (presets): a `NEURONS (override)` field shared by all presets, plus a `TICKS / EXPERIMENT` override
+
+The clamp range (`9 – 102 400`) is enforced both in the core (`paramsForNeurons`) and in the API server (`clampNeurons`), so any client supplying out-of-range values gets sane defaults instead of an error.
+
 ---
 
 ## What this project implements

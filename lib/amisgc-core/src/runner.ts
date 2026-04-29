@@ -1,7 +1,7 @@
 import { createSim, simTick, calcStats, captureAttractor, setTask } from "./sim.js";
 import type { Stats, SimState } from "./types.js";
 import type { Params } from "./params.js";
-import { defaultParams } from "./params.js";
+import { defaultParams, paramsForNeurons } from "./params.js";
 import {
   type ExperimentSpec,
   findExperiment,
@@ -12,6 +12,9 @@ import { stabilityCheck, type StabilityResult } from "./stats.js";
 
 export interface RunOptions {
   scale?: 81 | 810 | 81000;
+  // Optional neuron-count override. If set, the simulator grid is rebuilt for
+  // round(√neurons), ignoring the discrete `scale` enum.
+  neurons?: number;
   experimentId?: string;
   customParams?: Partial<Params>;
   ticks?: number;
@@ -35,6 +38,8 @@ export interface RunOptions {
 export interface RunStart {
   experimentId: string | null;
   scale: 81 | 810 | 81000;
+  // Whether N was forced by an explicit `neurons` override (vs the scale enum).
+  neuronsOverride?: number;
   N: number;
   ticks: number;
   seed: number;
@@ -97,7 +102,10 @@ export function startRun(opts: RunOptions = {}): RunHandle {
     if (opts.experimentId) {
       exp = findExperiment(opts.experimentId);
     }
-    const baseParams = defaultParams(scale);
+    const baseParams =
+      typeof opts.neurons === "number" && Number.isFinite(opts.neurons)
+        ? paramsForNeurons(opts.neurons)
+        : defaultParams(scale);
     const params: Params = {
       ...baseParams,
       ...(exp?.params ?? {}),
@@ -111,6 +119,7 @@ export function startRun(opts: RunOptions = {}): RunHandle {
     opts.onStart?.({
       experimentId: opts.experimentId ?? null,
       scale,
+      ...(typeof opts.neurons === "number" ? { neuronsOverride: opts.neurons } : {}),
       N: params.N,
       ticks,
       seed,
