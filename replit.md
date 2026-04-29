@@ -121,8 +121,24 @@ Open `notebooks/amisgc_kaggle.ipynb`, allow internet access in the kernel settin
 | GET    | `/api/sweeps/:id`       | Sweep snapshot incl. all combos and best index                                     |
 | DELETE | `/api/sweeps/:id`       | Cancel a running sweep                                                             |
 | GET    | `/api/sweeps/:id/stream`| SSE: `snapshot`, `sweep_start`, `combo_start`, `combo_progress`, `combo_complete`, `sweep_complete` |
+| POST   | `/api/batches`          | Run an experiment list serially (`experimentIds[]` / `phase` / `all`), with optional `repeats` per item for variance |
+| GET    | `/api/batches`          | List batches |
+| GET    | `/api/batches/:id`      | Batch snapshot incl. per-experiment status, mean/std measured value, pass count |
+| DELETE | `/api/batches/:id`      | Cancel a running batch |
+| GET    | `/api/batches/:id/stream`| SSE: `snapshot`, `batch_start`, `item_start`, `item_progress`, `item_complete`, `batch_complete` |
 
 All run state is held in-memory in the API server (no DB required); each run owns a cooperative cancellation token wired into the simulator loop.
+
+### Run All / Batch panel
+
+The header **▶ RUN ALL** button opens the experiment battery panel, with one-click presets:
+
+- **Run Phase 0 sweep (×2)** — the four PH0 gate experiments, two repeats each, mean ± std reported
+- **Run all CORE (PH0–C5)** — the full attractor stack
+- **Run everything** — every registered experiment, serially
+- Or pick any phase from the dropdown
+
+Each item shows its target metric, target threshold (≥ or ≤), measured mean ± std across repeats, pass count (`k/N`), tick progress, and elapsed time. Batches can be cancelled mid-run and exported to CSV when done.
 
 ---
 

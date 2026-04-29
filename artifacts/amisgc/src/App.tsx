@@ -7,6 +7,7 @@ import { RunsList } from "./components/RunsList";
 import { RunDetailPanel } from "./components/RunDetailPanel";
 import { Panel, Pill } from "./components/Panel";
 import { SweepPanel } from "./components/SweepPanel";
+import { BatchPanel } from "./components/BatchPanel";
 import {
   api,
   subscribeRun,
@@ -57,6 +58,7 @@ function AppShell() {
   const [viewMode, setViewMode] = useState<ViewMode>("STATE");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
@@ -229,6 +231,7 @@ function AppShell() {
         onExportJSON={handleExportJSON}
         onExportTable={handleExportTable}
         onOpenSweep={() => setSweepOpen(true)}
+        onOpenBatch={() => setBatchOpen(true)}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
         canExport={!!activeRun}
@@ -303,6 +306,7 @@ function AppShell() {
       <Footer />
 
       <SweepPanel open={sweepOpen} onClose={() => setSweepOpen(false)} />
+      <BatchPanel open={batchOpen} onClose={() => setBatchOpen(false)} groups={groups} />
 
       {drawerOpen && (
         <div className="mobile-drawer">
@@ -351,6 +355,7 @@ interface HeaderProps {
   onExportJSON: () => void;
   onExportTable: () => void;
   onOpenSweep: () => void;
+  onOpenBatch: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
   canExport: boolean;
@@ -414,6 +419,7 @@ function Header({
   onExportJSON,
   onExportTable,
   onOpenSweep,
+  onOpenBatch,
   speed,
   onSpeedChange,
   canExport,
@@ -486,7 +492,14 @@ function Header({
 
           <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
 
-          {/* Auto sweep */}
+          {/* Run all + auto sweep */}
+          <HeaderButton
+            onClick={onOpenBatch}
+            color="#ffd060"
+            title="run all experiments serially"
+          >
+            ▶ RUN ALL
+          </HeaderButton>
           <HeaderButton onClick={onOpenSweep} color="#ffd060" title="parameter auto-sweep">
             ⚡ AUTO SWEEP
           </HeaderButton>

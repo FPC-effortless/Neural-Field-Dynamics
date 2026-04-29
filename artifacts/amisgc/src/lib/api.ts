@@ -326,6 +326,115 @@ export interface SweepHandlers {
   onError?: (msg: string) => void;
 }
 
+// ─── Batch client ────────────────────────────────────────────────────────────
+
+export interface BatchItem {
+  index: number;
+  experimentId: string;
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  hypothesis: string;
+  runIds: string[];
+  measuredValues: number[];
+  passes: number;
+  totalRuns: number;
+  status: "pending" | "running" | "completed" | "skipped" | "error";
+  meanMeasured: number | null;
+  stdMeasured: number | null;
+  ticksDone: number;
+  ticksTotal: number;
+  durationMs: number;
+}
+
+export interface BatchDetail {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled";
+  scale: 81 | 810 | 81000;
+  ticksPerExperiment: number | null;
+  repeats: number;
+  createdAt: number;
+  completedAt: number | null;
+  currentIndex: number;
+  totalCompleted: number;
+  totalPassed: number;
+  total: number;
+  items: BatchItem[];
+}
+
+export interface CreateBatchRequest {
+  experimentIds?: string[];
+  phase?: string;
+  all?: boolean;
+  scale?: 81 | 810 | 81000;
+  ticksPerExperiment?: number;
+  repeats?: number;
+}
+
+export const batchApi = {
+  list: () => jsonFetch<{ batches: BatchDetail[] }>(`${API_PREFIX}/batches`),
+  get: (id: string) => jsonFetch<BatchDetail>(`${API_PREFIX}/batches/${id}`),
+  create: (body: CreateBatchRequest) =>
+    jsonFetch<{ id: string; total: number; repeats: number }>(`${API_PREFIX}/batches`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  cancel: (id: string) =>
+    jsonFetch<{ id: string; status: string }>(`${API_PREFIX}/batches/${id}`, {
+      method: "DELETE",
+    }),
+  streamUrl: (id: string) => `${API_PREFIX}/batches/${id}/stream`,
+};
+
+export interface BatchHandlers {
+  onSnapshot?: (b: BatchDetail) => void;
+  onBatchStart?: (b: BatchDetail) => void;
+  onItemStart?: (e: { batchId: string; item: BatchItem }) => void;
+  onItemProgress?: (e: { batchId: string; item: BatchItem }) => void;
+  onItemComplete?: (e: {
+    batchId: string;
+    item: BatchItem;
+    totalCompleted: number;
+    totalPassed: number;
+  }) => void;
+  onBatchComplete?: (b: BatchDetail) => void;
+  onError?: (msg: string) => void;
+}
+
+export function subscribeBatch(id: string, handlers: BatchHandlers): () => void {
+  const es = new EventSource(batchApi.streamUrl(id));
+  const bind = <T,>(name: string, fn?: (data: T) => void) => {
+    if (!fn) return;
+    es.addEventListener(name, (ev: MessageEvent) => {
+      try {
+        fn(JSON.parse(ev.data) as T);
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+  bind<BatchDetail>("snapshot", handlers.onSnapshot);
+  bind<BatchDetail>("batch_start", handlers.onBatchStart);
+  bind<{ batchId: string; item: BatchItem }>("item_start", handlers.onItemStart);
+  bind<{ batchId: string; item: BatchItem }>("item_progress", handlers.onItemProgress);
+  bind<{ batchId: string; item: BatchItem; totalCompleted: number; totalPassed: number }>(
+    "item_complete",
+    handlers.onItemComplete,
+  );
+  es.addEventListener("batch_complete", (ev: MessageEvent) => {
+    try {
+      handlers.onBatchComplete?.(JSON.parse(ev.data) as BatchDetail);
+    } catch {
+      /* ignore */
+    }
+    es.close();
+  });
+  es.addEventListener("error", () => handlers.onError?.("stream error"));
+  return () => es.close();
+}
+
 export function subscribeSweep(id: string, handlers: SweepHandlers): () => void {
   const es = new EventSource(sweepApi.streamUrl(id));
   const bind = <T,>(name: string, fn?: (data: T) => void) => {

@@ -9,6 +9,7 @@ import {
   type RunPhaseEvent,
   type RunStart,
   type Stats,
+  type ExperimentSpec,
 } from "@workspace/amisgc-core";
 import { runArcBenchmark, type ArcResult, type ArcSample } from "@workspace/amisgc-core";
 
@@ -633,6 +634,394 @@ router.get("/sweeps/:id/stream", (req, res) => {
   req.on("close", () => {
     clearInterval(heartbeat);
     s.subscribers.delete(res);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batches — run a list of experiments serially, with optional repeats per
+// experiment (multi-run for variance), with live progress + cancellation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface BatchItem {
+  index: number;
+  experimentId: string;
+  experimentName: string;
+  phase: string;
+  metric: string;
+  target: number;
+  targetDir: 1 | -1;
+  hypothesis: string;
+  runIds: string[];
+  measuredValues: number[];
+  passes: number;
+  totalRuns: number;
+  status: "pending" | "running" | "completed" | "skipped" | "error";
+  meanMeasured: number | null;
+  stdMeasured: number | null;
+  ticksDone: number;
+  ticksTotal: number;
+  durationMs: number;
+}
+
+interface BatchRecord {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled";
+  scale: 81 | 810 | 81000;
+  ticksPerExperiment: number | null;
+  repeats: number;
+  createdAt: number;
+  completedAt: number | null;
+  currentIndex: number;
+  totalCompleted: number;
+  totalPassed: number;
+  cancelled: boolean;
+  items: BatchItem[];
+  subscribers: Set<Response>;
+  cancelChild: () => void;
+}
+
+const batches = new Map<string, BatchRecord>();
+let nextBatchId = 1;
+const MAX_BATCHES = 10;
+
+function broadcastBatch(b: BatchRecord, event: string, data: unknown): void {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const sub of b.subscribers) {
+    try {
+      sub.write(payload);
+    } catch {
+      b.subscribers.delete(sub);
+    }
+  }
+}
+
+function pruneBatches(): void {
+  if (batches.size <= MAX_BATCHES) return;
+  const sortable = [...batches.values()].sort((a, b) => a.createdAt - b.createdAt);
+  for (const b of sortable) {
+    if (batches.size <= MAX_BATCHES) break;
+    if (b.status === "running" || b.status === "pending") continue;
+    batches.delete(b.id);
+  }
+}
+
+function meanStd(xs: number[]): { mean: number | null; std: number | null } {
+  const valid = xs.filter((v) => Number.isFinite(v));
+  if (valid.length === 0) return { mean: null, std: null };
+  const m = valid.reduce((a, b) => a + b, 0) / valid.length;
+  if (valid.length < 2) return { mean: m, std: 0 };
+  const v = valid.reduce((a, b) => a + (b - m) ** 2, 0) / (valid.length - 1);
+  return { mean: m, std: Math.sqrt(v) };
+}
+
+function serializeBatch(b: BatchRecord) {
+  return {
+    id: b.id,
+    status: b.status,
+    scale: b.scale,
+    ticksPerExperiment: b.ticksPerExperiment,
+    repeats: b.repeats,
+    createdAt: b.createdAt,
+    completedAt: b.completedAt,
+    currentIndex: b.currentIndex,
+    totalCompleted: b.totalCompleted,
+    totalPassed: b.totalPassed,
+    total: b.items.length,
+    items: b.items,
+  };
+}
+
+function pickExperiments(body: {
+  experimentIds?: string[];
+  phase?: string;
+  all?: boolean;
+}): ExperimentSpec[] {
+  if (body.experimentIds && body.experimentIds.length > 0) {
+    const out: ExperimentSpec[] = [];
+    for (const id of body.experimentIds) {
+      const exp = findExperiment(id);
+      if (exp) out.push(exp);
+    }
+    return out;
+  }
+  if (body.phase) {
+    return ALL_EXPERIMENTS.filter((e) => e.phase === body.phase);
+  }
+  if (body.all) return [...ALL_EXPERIMENTS];
+  return [];
+}
+
+async function runBatchItem(
+  b: BatchRecord,
+  item: BatchItem,
+  exp: ExperimentSpec,
+): Promise<void> {
+  const startTime = Date.now();
+  for (let r = 0; r < item.totalRuns; r++) {
+    if (b.cancelled) {
+      item.status = "skipped";
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const id = `r${nextId++}`;
+      const ticks = b.ticksPerExperiment ?? exp.ticks;
+      const record: RunRecord = {
+        id,
+        experimentId: `batch:${b.id}:${item.index}:${r}`,
+        scale: b.scale,
+        status: "pending",
+        createdAt: Date.now(),
+        startedAt: null,
+        completedAt: null,
+        ticks,
+        ticksDone: 0,
+        latestStats: null,
+        result: null,
+        arcResult: null,
+        error: null,
+        hypothesis: exp.hypothesis,
+        subscribers: new Set(),
+        history: [],
+        cancel: () => undefined,
+      };
+      runs.set(id, record);
+      pruneRuns();
+      item.runIds.push(id);
+      item.ticksTotal = ticks;
+
+      const handle = startRun({
+        scale: b.scale,
+        experimentId: exp.id,
+        ticks,
+        onStart: (info) => {
+          record.start = info;
+          record.status = "running";
+          record.startedAt = Date.now();
+        },
+        onSample: (e: RunSampleEvent) => {
+          record.ticksDone = e.t;
+          record.latestStats = e.stats;
+          item.ticksDone = e.t;
+          // Keep a coarse history for inspection
+          if (
+            record.history.length === 0 ||
+            e.t - (record.history.at(-1)?.t ?? 0) >= 200
+          ) {
+            record.history.push({ t: e.t, stats: e.stats });
+            if (record.history.length > MAX_HISTORY) record.history.shift();
+          }
+          if (e.t % 1000 === 0) {
+            broadcastBatch(b, "item_progress", { batchId: b.id, item });
+          }
+        },
+        onPhase: () => undefined,
+        onComplete: (e: RunCompleteEvent) => {
+          record.result = e;
+          record.passed = e.passed;
+          record.metric = e.metric;
+          record.measured = e.measured;
+          record.target = e.target;
+          record.completedAt = Date.now();
+          record.status = "completed";
+          if (typeof e.measured === "number") {
+            item.measuredValues.push(e.measured);
+          }
+          if (e.passed) item.passes += 1;
+          resolve();
+        },
+        onError: (err) => {
+          record.status = "error";
+          record.error = err.message;
+          record.completedAt = Date.now();
+          item.status = "error";
+          resolve();
+        },
+      });
+      record.cancel = () => handle.cancel();
+      b.cancelChild = () => handle.cancel();
+      handle.promise.catch(() => undefined);
+    });
+  }
+  const stats = meanStd(item.measuredValues);
+  item.meanMeasured = stats.mean;
+  item.stdMeasured = stats.std;
+  item.durationMs = Date.now() - startTime;
+  if (item.status !== "error" && item.status !== "skipped") {
+    item.status = "completed";
+  }
+  b.cancelChild = () => undefined;
+}
+
+router.post("/batches", (req, res) => {
+  const body = (req.body ?? {}) as {
+    experimentIds?: string[];
+    phase?: string;
+    all?: boolean;
+    scale?: 81 | 810 | 81000;
+    ticksPerExperiment?: number;
+    repeats?: number;
+  };
+  const experiments = pickExperiments(body);
+  if (experiments.length === 0) {
+    res.status(400).json({
+      error:
+        "no experiments selected — provide experimentIds, phase, or all=true",
+    });
+    return;
+  }
+  if (experiments.length > 200) {
+    res.status(400).json({ error: "too many experiments (max 200)" });
+    return;
+  }
+  const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const repeats = Math.min(Math.max(body.repeats ?? 1, 1), 5);
+  const ticksPerExperiment =
+    typeof body.ticksPerExperiment === "number"
+      ? Math.min(Math.max(body.ticksPerExperiment, 100), 200000)
+      : null;
+
+  const id = `b${nextBatchId++}`;
+  const items: BatchItem[] = experiments.map((exp, i) => ({
+    index: i,
+    experimentId: exp.id,
+    experimentName: exp.name,
+    phase: exp.phase,
+    metric: exp.metric,
+    target: exp.targetVal,
+    targetDir: exp.targetDir,
+    hypothesis: exp.hypothesis,
+    runIds: [],
+    measuredValues: [],
+    passes: 0,
+    totalRuns: repeats,
+    status: "pending",
+    meanMeasured: null,
+    stdMeasured: null,
+    ticksDone: 0,
+    ticksTotal: ticksPerExperiment ?? exp.ticks,
+    durationMs: 0,
+  }));
+
+  const batch: BatchRecord = {
+    id,
+    status: "pending",
+    scale,
+    ticksPerExperiment,
+    repeats,
+    createdAt: Date.now(),
+    completedAt: null,
+    currentIndex: 0,
+    totalCompleted: 0,
+    totalPassed: 0,
+    cancelled: false,
+    items,
+    subscribers: new Set(),
+    cancelChild: () => undefined,
+  };
+  batches.set(id, batch);
+  pruneBatches();
+
+  (async () => {
+    batch.status = "running";
+    broadcastBatch(batch, "batch_start", serializeBatch(batch));
+    for (let i = 0; i < batch.items.length; i++) {
+      if (batch.cancelled) break;
+      const item = batch.items[i] as BatchItem;
+      const exp = findExperiment(item.experimentId);
+      if (!exp) {
+        item.status = "skipped";
+        continue;
+      }
+      batch.currentIndex = i;
+      item.status = "running";
+      broadcastBatch(batch, "item_start", { batchId: batch.id, item });
+      await runBatchItem(batch, item, exp);
+      if (item.status === "completed" || item.status === "error") {
+        batch.totalCompleted += 1;
+        // Pass = at least 50% of repeats passed
+        if (item.passes * 2 >= item.totalRuns) batch.totalPassed += 1;
+      }
+      broadcastBatch(batch, "item_complete", {
+        batchId: batch.id,
+        item,
+        totalCompleted: batch.totalCompleted,
+        totalPassed: batch.totalPassed,
+      });
+    }
+    batch.status = batch.cancelled ? "cancelled" : "completed";
+    batch.completedAt = Date.now();
+    broadcastBatch(batch, "batch_complete", serializeBatch(batch));
+    for (const sub of batch.subscribers) {
+      try {
+        sub.end();
+      } catch {
+        /* */
+      }
+    }
+    batch.subscribers.clear();
+  })().catch(() => undefined);
+
+  res.status(201).json({ id, total: batch.items.length, repeats });
+});
+
+router.get("/batches", (_req, res) => {
+  res.json({
+    batches: [...batches.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(serializeBatch),
+  });
+});
+
+router.get("/batches/:id", (req, res) => {
+  const b = batches.get(req.params.id as string);
+  if (!b) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json(serializeBatch(b));
+});
+
+router.delete("/batches/:id", (req, res) => {
+  const b = batches.get(req.params.id as string);
+  if (!b) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  b.cancelled = true;
+  b.cancelChild();
+  res.json({ id: b.id, status: "cancelled" });
+});
+
+router.get("/batches/:id/stream", (req, res) => {
+  const b = batches.get(req.params.id as string);
+  if (!b) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+  res.write(`event: snapshot\ndata: ${JSON.stringify(serializeBatch(b))}\n\n`);
+  if (b.status === "completed" || b.status === "cancelled") {
+    res.write(`event: batch_complete\ndata: ${JSON.stringify(serializeBatch(b))}\n\n`);
+    res.end();
+    return;
+  }
+  b.subscribers.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`: heartbeat ${Date.now()}\n\n`);
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    b.subscribers.delete(res);
   });
 });
 
