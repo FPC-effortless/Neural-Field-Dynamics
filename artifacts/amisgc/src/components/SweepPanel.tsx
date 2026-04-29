@@ -26,16 +26,20 @@ function paramSummary(p: Record<string, number | boolean | string>): string {
     .join(" ");
 }
 
-// Phase 0 default grid — must match the server-side default in routes/runs.ts.
+// Phase 0 default grid (v13 spec) — must match the server-side default in
+// routes/runs.ts (PHASE0_DEFAULT_RANGES). β and δ are SWAPPED versus v12.
 // 3 × 4 × 3 × 3 × 3 = 324 combinations.
 const PHASE0_GRID = {
   TAU_ATT: [0.7, 1.0, 1.5],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
-  DELTA_TEMPORAL: [0.2, 0.4, 0.6],
-  BETA_ENTROPY: [0.1, 0.3, 0.5],
+  BETA_ENTROPY: [0.2, 0.4, 0.6],
+  DELTA_TEMPORAL: [0.1, 0.3, 0.5],
   NOISE_SIGMA: [0.01, 0.02, 0.05],
 };
 const PHASE0_TOTAL = Object.values(PHASE0_GRID).reduce((a, b) => a * b.length, 1);
+// v13 default sample length per combo (50 000 ticks). Server enforces the
+// same value when the request omits ticksPerCombo.
+const PHASE0_DEFAULT_TICKS = 50000;
 
 type SortMode = "CAR" | "STREAK" | "INDEX";
 
@@ -46,7 +50,8 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
   // Launch-form controls
   const [scale, setScale] = useState<81 | 810 | 81000>(81);
   const [neuronsStr, setNeuronsStr] = useState<string>("");
-  const [ticks, setTicks] = useState<number>(2500);
+  const [topKStr, setTopKStr] = useState<string>("");
+  const [ticks, setTicks] = useState<number>(PHASE0_DEFAULT_TICKS);
   // Live sort for the combos table
   const [sortMode, setSortMode] = useState<SortMode>("CAR");
 
@@ -71,16 +76,21 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
     setError(null);
     try {
       const neuronsNum = neuronsStr.trim() === "" ? undefined : Number(neuronsStr);
+      const topKNum = topKStr.trim() === "" ? undefined : Number(topKStr);
       const body: {
         ticksPerCombo: number;
         scale: 81 | 810 | 81000;
         neurons?: number;
+        topK?: number;
       } = {
         ticksPerCombo: ticks,
         scale,
       };
       if (typeof neuronsNum === "number" && Number.isFinite(neuronsNum)) {
         body.neurons = neuronsNum;
+      }
+      if (typeof topKNum === "number" && Number.isFinite(topKNum)) {
+        body.topK = topKNum;
       }
       const { id } = await sweepApi.create(body);
       const detail = await sweepApi.get(id);
@@ -197,6 +207,21 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
                 />
                 <div style={{ fontSize: 8, color: "#0d7060", marginTop: 2 }}>
                   Optional · 9 – 102 400 · overrides scale
+                </div>
+              </FieldLabel>
+              <FieldLabel label="TOP_K (override)">
+                <input
+                  type="number"
+                  min={1}
+                  max={102400}
+                  step={1}
+                  value={topKStr}
+                  onChange={(e) => setTopKStr(e.target.value)}
+                  placeholder="—"
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#0d7060", marginTop: 2 }}>
+                  Optional · absolute count · overrides TOPK_FRACTION
                 </div>
               </FieldLabel>
               <FieldLabel label="TICKS PER COMBO">

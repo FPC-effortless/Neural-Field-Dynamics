@@ -8,6 +8,7 @@ import { RunDetailPanel } from "./components/RunDetailPanel";
 import { Panel, Pill } from "./components/Panel";
 import { SweepPanel } from "./components/SweepPanel";
 import { BatchPanel } from "./components/BatchPanel";
+import { AutoModePanel } from "./components/AutoModePanel";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import {
   api,
@@ -60,6 +61,7 @@ function AppShell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sweepOpen, setSweepOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
+  const [autoModeOpen, setAutoModeOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -234,6 +236,7 @@ function AppShell() {
         onExportTable={handleExportTable}
         onOpenSweep={() => setSweepOpen(true)}
         onOpenBatch={() => setBatchOpen(true)}
+        onOpenAutoMode={() => setAutoModeOpen(true)}
         onOpenLeaderboard={() => setLeaderboardOpen(true)}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
@@ -310,6 +313,7 @@ function AppShell() {
 
       <SweepPanel open={sweepOpen} onClose={() => setSweepOpen(false)} />
       <BatchPanel open={batchOpen} onClose={() => setBatchOpen(false)} groups={groups} />
+      <AutoModePanel open={autoModeOpen} onClose={() => setAutoModeOpen(false)} />
       <LeaderboardPanel
         open={leaderboardOpen}
         onClose={() => setLeaderboardOpen(false)}
@@ -363,6 +367,7 @@ interface HeaderProps {
   onExportTable: () => void;
   onOpenSweep: () => void;
   onOpenBatch: () => void;
+  onOpenAutoMode: () => void;
   onOpenLeaderboard: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
@@ -428,6 +433,7 @@ function Header({
   onExportTable,
   onOpenSweep,
   onOpenBatch,
+  onOpenAutoMode,
   onOpenLeaderboard,
   speed,
   onSpeedChange,
@@ -511,6 +517,13 @@ function Header({
           </HeaderButton>
           <HeaderButton onClick={onOpenSweep} color="#ffd060" title="parameter auto-sweep">
             ⚡ AUTO SWEEP
+          </HeaderButton>
+          <HeaderButton
+            onClick={onOpenAutoMode}
+            color="#aa88ff"
+            title="self-driving Existence-Gate hunt that reruns failed sweeps with refined ranges"
+          >
+            ◈ AUTO MODE
           </HeaderButton>
           <HeaderButton
             onClick={onOpenLeaderboard}

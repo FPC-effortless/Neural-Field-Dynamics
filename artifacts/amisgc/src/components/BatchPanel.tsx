@@ -46,6 +46,7 @@ function statusColor(status: BatchItem["status"], passed: boolean): string {
 interface BatchFormOverrides {
   scale: 81 | 810 | 81000;
   neurons?: number;
+  topK?: number;
   ticksPerExperiment?: number;
 }
 
@@ -58,6 +59,7 @@ function presetBody(
   const base: CreateBatchRequest = {
     scale: overrides.scale,
     ...(overrides.neurons !== undefined ? { neurons: overrides.neurons } : {}),
+    ...(overrides.topK !== undefined ? { topK: overrides.topK } : {}),
     ...(overrides.ticksPerExperiment !== undefined
       ? { ticksPerExperiment: overrides.ticksPerExperiment }
       : {}),
@@ -82,6 +84,7 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
   // Launch-form overrides shared by all presets (scale, neuron count, ticks).
   const [scale, setScale] = useState<81 | 810 | 81000>(81);
   const [neuronsStr, setNeuronsStr] = useState<string>("");
+  const [topKStr, setTopKStr] = useState<string>("");
   const [ticksStr, setTicksStr] = useState<string>("");
   const [past, setPast] = useState<BatchDetail[]>([]);
   const [diffWith, setDiffWith] = useState<string>("");
@@ -275,17 +278,21 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
 
   const overrides = useMemo<BatchFormOverrides>(() => {
     const neuronsNum = neuronsStr.trim() === "" ? undefined : Number(neuronsStr);
+    const topKNum = topKStr.trim() === "" ? undefined : Number(topKStr);
     const ticksNum = ticksStr.trim() === "" ? undefined : Number(ticksStr);
     return {
       scale,
       ...(typeof neuronsNum === "number" && Number.isFinite(neuronsNum)
         ? { neurons: neuronsNum }
         : {}),
+      ...(typeof topKNum === "number" && Number.isFinite(topKNum)
+        ? { topK: topKNum }
+        : {}),
       ...(typeof ticksNum === "number" && Number.isFinite(ticksNum)
         ? { ticksPerExperiment: ticksNum }
         : {}),
     };
-  }, [scale, neuronsStr, ticksStr]);
+  }, [scale, neuronsStr, topKStr, ticksStr]);
 
   if (!open) return null;
 
@@ -346,7 +353,7 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
+                gridTemplateColumns: "1fr 1fr 1fr 1fr",
                 gap: 10,
                 marginBottom: 10,
                 padding: 8,
@@ -379,6 +386,21 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                 />
                 <div style={{ fontSize: 8, color: "#5a4a1a", marginTop: 2 }}>
                   9 – 102 400 · overrides scale
+                </div>
+              </BatchField>
+              <BatchField label="TOP_K (override)">
+                <input
+                  type="number"
+                  min={1}
+                  max={102400}
+                  step={1}
+                  value={topKStr}
+                  onChange={(e) => setTopKStr(e.target.value)}
+                  placeholder="auto"
+                  style={batchInputStyle}
+                />
+                <div style={{ fontSize: 8, color: "#5a4a1a", marginTop: 2 }}>
+                  absolute count · overrides TOPK_FRACTION
                 </div>
               </BatchField>
               <BatchField label="TICKS / EXPERIMENT">
@@ -504,6 +526,12 @@ export function BatchPanel({ open, onClose, groups }: BatchPanelProps) {
                     <>
                       {" "}· NEURONS{" "}
                       <span style={{ color: "#ffd060" }}>{batch.neurons}</span>
+                    </>
+                  ) : null}
+                  {batch.topK ? (
+                    <>
+                      {" "}· TOP_K{" "}
+                      <span style={{ color: "#ffd060" }}>{batch.topK}</span>
                     </>
                   ) : null}
                   {batch.ticksPerExperiment ? (

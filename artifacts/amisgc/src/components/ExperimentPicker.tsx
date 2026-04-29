@@ -21,15 +21,22 @@ export const ExperimentPicker = memo(function ExperimentPicker({
   const [overrideTicks, setOverrideTicks] = useState<string>("");
   // Optional neuron-count override. Empty string ⇒ use the scale enum above.
   const [overrideNeurons, setOverrideNeurons] = useState<string>("");
+  // Optional Top-K override (absolute count). Empty ⇒ use experiment's default
+  // TOPK_FRACTION. Server clamps to [1, 102 400] and converts to fraction.
+  const [overrideTopK, setOverrideTopK] = useState<string>("");
 
   const expById = new Map((experiments ?? []).map((e) => [e.id, e]));
 
   const buildLaunchReq = (extra: Partial<CreateRunRequest> = {}): CreateRunRequest => {
     const neuronsNum = overrideNeurons.trim() === "" ? undefined : Number(overrideNeurons);
+    const topKNum = overrideTopK.trim() === "" ? undefined : Number(overrideTopK);
     const req: CreateRunRequest = { scale, ...extra };
     if (overrideTicks) req.ticks = Number(overrideTicks);
     if (typeof neuronsNum === "number" && Number.isFinite(neuronsNum)) {
       req.neurons = neuronsNum;
+    }
+    if (typeof topKNum === "number" && Number.isFinite(topKNum)) {
+      req.topK = topKNum;
     }
     return req;
   };
@@ -161,6 +168,31 @@ export const ExperimentPicker = memo(function ExperimentPicker({
                     fontSize: 9,
                     padding: "2px 4px",
                     width: 80,
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-1">
+                <span
+                  style={{ fontSize: 7, color: "#1a3a30", letterSpacing: 1 }}
+                  title="Optional Top-K override (absolute count of conscious neurons per tick). Wins over TOPK_FRACTION in customParams. Clamped to [1, 102 400]."
+                >
+                  TOP_K
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={102400}
+                  step={1}
+                  value={overrideTopK}
+                  placeholder="auto"
+                  onChange={(e) => setOverrideTopK(e.target.value)}
+                  style={{
+                    background: "#020c16",
+                    color: "#00ffc4",
+                    border: "1px solid #0f4a3a",
+                    fontSize: 9,
+                    padding: "2px 4px",
+                    width: 70,
                   }}
                 />
               </div>

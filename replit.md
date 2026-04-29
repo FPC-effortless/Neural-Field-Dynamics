@@ -1,6 +1,6 @@
 # AMISGC Research Programme
 
-**Emergent Intelligence from a Metabolically Constrained Predictive Neural Field — v12.0**
+**Emergent Intelligence from a Metabolically Constrained Predictive Neural Field — v13.0**
 
 A full working research codebase that runs on Kaggle, the web, and the CLI, with the web UI and CLI driving the same simulation engine simultaneously.
 
@@ -12,8 +12,8 @@ The previous v12 used a hard top-K bottleneck which was unable to clear the **Ex
 | --- | --- | --- |
 | `TAU_ATT` (τ) | 0.7 | softmax temperature on attention logits |
 | `GAMMA_GLOBAL` (γ) | 1.0 | global field coupling strength |
-| `BETA_ENTROPY` (β) | 0.2 | entropy gradient pressure |
-| `DELTA_TEMPORAL` (δ) | 0.3 | temporal coherence (slow EMA pull) |
+| `BETA_ENTROPY` (β) | 0.4 | entropy gradient pressure (v13: was δ's old default) |
+| `DELTA_TEMPORAL` (δ) | 0.3 | temporal coherence (slow EMA pull) — v13 sweep range now `[0.1, 0.3, 0.5]` |
 | `NOISE_SIGMA` (σ) | 0.02 | Box-Muller exploration noise |
 
 `ALPHA_SLOW = 0.02` updates the per-neuron slow apical EMA `a_slow`, and `PU_LAG = 4` is the lag used by the Predictive Utility MI estimator. The legacy top-K path is still reachable by setting `ATTN_MODE = "topk"` for ablation experiments.
@@ -47,13 +47,13 @@ The default `POST /api/sweeps` body has been expanded to the post-B3 targeted Ph
 {
   "TAU_ATT":        [0.7, 1.0, 1.5],
   "GAMMA_GLOBAL":   [1.0, 1.5, 2.0, 3.0],
-  "DELTA_TEMPORAL": [0.2, 0.4, 0.6],
-  "BETA_ENTROPY":   [0.1, 0.3, 0.5],
+  "BETA_ENTROPY":   [0.2, 0.4, 0.6],
+  "DELTA_TEMPORAL": [0.1, 0.3, 0.5],
   "NOISE_SIGMA":    [0.01, 0.02, 0.05]
 }
 ```
 
-The sweep cap has been raised from 64 to 400 combinations to accommodate this grid; per-combo ticks now cap at 50k (extend from 30k when Φ shows a rising trend).
+**v13 (April 2026) spec change:** β and δ default ranges are SWAPPED relative to v12. The Existence-Gate streak target is raised from 100 → 1000 ticks (held continuously) before the gate is considered "open". Default `ticksPerCombo` is raised from 20 000 → 50 000 so the longer streak target is reachable in a single sample. Server constants in `artifacts/api-server/src/routes/runs.ts`: `PHASE0_DEFAULT_TICKS = 50000`, `PHASE0_MAX_TICKS = 50000`. The sweep cap of 400 combinations is unchanged.
 
 ### AUTO SWEEP UI (April 2026)
 
@@ -81,6 +81,25 @@ UI surfaces:
 - **Experiment battery panel** (presets): a `NEURONS (override)` field shared by all presets, plus a `TICKS / EXPERIMENT` override
 
 The clamp range (`9 – 102 400`) is enforced both in the core (`paramsForNeurons`) and in the API server (`clampNeurons`), so any client supplying out-of-range values gets sane defaults instead of an error.
+
+### Top-K override everywhere (v13)
+
+Mirroring neuron-count, every entry point now also accepts an optional `topK` integer (absolute count of "conscious" neurons selected per tick under `ATTN_MODE = "topk"` ablations). Server-side `applyTopKOverride` clamps to `[1, 102 400]`, then converts to `TOPK_FRACTION = topK / Neff` (where `Neff` is the post-override neuron count) and writes it into `customParams`, so it wins over any `TOPK_FRACTION` the caller supplied. Endpoints: `POST /api/runs`, `POST /api/sweeps`, `POST /api/batches`, `POST /api/batches/:id/rerun`, `POST /api/automode`. Persisted on `RunRecord.topK`, `SweepRecord.topK`, `BatchRecord.topK`. UI surfaces: `TOP_K` input in the experiment picker, `TOP_K (override)` in the sweep launcher, batch panel (4-column override grid), and Auto Mode launcher.
+
+### Auto Mode (v13)
+
+`◈ AUTO MODE` (purple header button) drives a chain of sweeps that progressively refine around the best combo until the Existence Gate is held for ≥ `gateStreakTarget` ticks (1000 by v13 spec) or `maxIterations` is exhausted (default 4, max 10). Each iteration is a real `SweepRecord` (tagged with `autoModeId` / `autoModeIteration`) so its combos persist alongside hand-launched sweeps. The refinement strategy halves the spread of each parameter range around the previous best value, sampling 3 values per parameter per subsequent iteration.
+
+Endpoints: `POST /api/automode`, `GET /api/automode`, `GET /api/automode/:id`, `DELETE /api/automode/:id`, plus a Server-Sent Events stream at `GET /api/automode/:id/stream` (events: `snapshot`, `automode_start`, `iteration_start`, `combo_complete`, `iteration_complete`, `automode_complete`). Records persist to `data/automode/*.json`; running auto-modes are marked `cancelled` on server restart by `markRunningWorkInterrupted`.
+
+### Auto-sweep data storage (v13)
+
+All auto-sweeps and Auto Mode runs are persisted on disk and reloaded on server start, so dashboard navigation, restarts, and reruns all see the same canonical record:
+
+- `data/sweeps/<sweepId>.json` — every combo's params, ticks done, final stats, plus `autoModeId` / `autoModeIteration` when applicable
+- `data/batches/<batchId>.json` — batch items with `topK` / `neurons` overrides
+- `data/automode/<autoId>.json` — full Auto Mode session: iterations, base ranges, best combo so far, gate-streak history
+- `data/runs/<runId>.json` — the underlying simulator runs each combo produced (full history kept up to the run's tick budget)
 
 ---
 

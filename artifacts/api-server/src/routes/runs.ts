@@ -27,6 +27,9 @@ interface RunRecord {
   // Optional neuron-count override (rebuilds the simulator grid). When set, it
   // takes precedence over `scale` for sizing.
   neurons?: number;
+  // Optional Top-K override (absolute number of conscious neurons). When set,
+  // converted to TOPK_FRACTION = topK / N at run time.
+  topK?: number;
   status: "pending" | "running" | "completed" | "cancelled" | "error";
   createdAt: number;
   startedAt: number | null;
@@ -63,6 +66,47 @@ const NEURONS_MAX = 102_400;
 function clampNeurons(n: unknown): number | undefined {
   if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
   return Math.max(NEURONS_MIN, Math.min(NEURONS_MAX, Math.floor(n)));
+}
+
+// Clamp arbitrary Top-K overrides. Top-K is the absolute number of conscious
+// neurons selected per tick (the top of the soft-attention distribution that
+// the bottleneck/top-K attractor path uses). The value is clamped against the
+// neuron-count ceiling and converted to a TOPK_FRACTION at apply time using
+// the *resolved* N for that run, so the same `topK` works across scales.
+const TOPK_MIN = 1;
+const TOPK_MAX = NEURONS_MAX;
+function clampTopK(n: unknown): number | undefined {
+  if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
+  return Math.max(TOPK_MIN, Math.min(TOPK_MAX, Math.floor(n)));
+}
+
+// Compute the effective neuron count N that the simulator will build for a
+// given (scale, neurons-override) pair. Mirrors `paramsForNeurons` /
+// `defaultParams` in the core: neurons override wins; otherwise scale picks G.
+function effectiveN(scale: 81 | 810 | 81000, neurons: number | undefined): number {
+  let G: number;
+  if (typeof neurons === "number" && Number.isFinite(neurons)) {
+    const clamped = Math.max(NEURONS_MIN, Math.min(NEURONS_MAX, Math.floor(neurons)));
+    G = Math.max(3, Math.round(Math.sqrt(clamped)));
+  } else if (scale === 81) G = 9;
+  else if (scale === 810) G = Math.round(Math.sqrt(810));
+  else G = Math.round(Math.sqrt(81000));
+  return G * G;
+}
+
+// Merge a Top-K override into a customParams payload by computing
+// TOPK_FRACTION = topK / N (clamped to (0, 1]). Returns the (possibly new)
+// customParams object. If `topK` is undefined the original is returned as-is.
+function applyTopKOverride(
+  customParams: Record<string, number | boolean> | undefined,
+  topK: number | undefined,
+  scale: 81 | 810 | 81000,
+  neurons: number | undefined,
+): Record<string, number | boolean> | undefined {
+  if (topK === undefined) return customParams;
+  const N = effectiveN(scale, neurons);
+  const fraction = Math.max(1 / N, Math.min(1, topK / N));
+  return { ...(customParams ?? {}), TOPK_FRACTION: fraction };
 }
 
 function broadcast(run: RunRecord, event: string, data: unknown): void {
@@ -114,6 +158,7 @@ router.post("/runs", (req, res) => {
     experimentId?: string;
     scale?: 81 | 810 | 81000;
     neurons?: number;
+    topK?: number;
     ticks?: number;
     customParams?: Record<string, number | boolean>;
     type?: "experiment" | "arc";
@@ -123,17 +168,22 @@ router.post("/runs", (req, res) => {
   const id = `r${nextId++}`;
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
   const neurons = clampNeurons(body.neurons);
+  const topK = clampTopK(body.topK);
   const isArc = body.type === "arc";
 
   const exp = body.experimentId ? findExperiment(body.experimentId) : undefined;
   const requestedTicks = body.ticks ?? exp?.ticks ?? 5000;
   const ticks = Math.min(Math.max(requestedTicks, 100), 200000);
 
+  // Top-K override merges into customParams as TOPK_FRACTION = topK / N.
+  const customParams = applyTopKOverride(body.customParams, topK, scale, neurons);
+
   const record: RunRecord = {
     id,
     experimentId: body.experimentId ?? null,
     scale,
     ...(neurons !== undefined ? { neurons } : {}),
+    ...(topK !== undefined ? { topK } : {}),
     status: "pending",
     createdAt: Date.now(),
     startedAt: null,
@@ -218,7 +268,7 @@ router.post("/runs", (req, res) => {
     ...(neurons !== undefined ? { neurons } : {}),
     ...(body.experimentId ? { experimentId: body.experimentId } : {}),
     ticks,
-    ...(body.customParams ? { customParams: body.customParams as Record<string, never> } : {}),
+    ...(customParams ? { customParams: customParams as Record<string, never> } : {}),
     ...(typeof body.seed === "number" && Number.isFinite(body.seed)
       ? { seed: Math.floor(body.seed) }
       : {}),
@@ -376,6 +426,14 @@ interface SweepRecord {
   // Optional neuron-count override for every combo in this sweep. When set it
   // takes precedence over `scale` when sizing the simulator grid.
   neurons?: number;
+  // Optional Top-K override (absolute count). Stored on the sweep so reruns
+  // and refines preserve it; applied to each combo's params via TOPK_FRACTION.
+  topK?: number;
+  // Optional reference to an auto-mode session. Set when this sweep was
+  // launched as one iteration of an /api/automode session, so the UI can
+  // group sweep history by session and the auto-loop can resume cleanly.
+  autoModeId?: string;
+  autoModeIteration?: number;
   combos: SweepCombo[];
   currentIndex: number;
   bestIndex: number;
@@ -433,6 +491,18 @@ function loadPersistedSweeps(): void {
         scale: data.scale,
         ...(typeof (data as { neurons?: number }).neurons === "number"
           ? { neurons: (data as { neurons: number }).neurons }
+          : {}),
+        ...(typeof (data as { topK?: number }).topK === "number"
+          ? { topK: (data as { topK: number }).topK }
+          : {}),
+        ...(typeof (data as { autoModeId?: string }).autoModeId === "string"
+          ? { autoModeId: (data as { autoModeId: string }).autoModeId }
+          : {}),
+        ...(typeof (data as { autoModeIteration?: number }).autoModeIteration === "number"
+          ? {
+              autoModeIteration: (data as { autoModeIteration: number })
+                .autoModeIteration,
+            }
           : {}),
         combos: data.combos.map((c) => ({
           ...c,
@@ -511,6 +581,11 @@ function serializeSweep(s: SweepRecord) {
     ticksPerCombo: s.ticksPerCombo,
     scale: s.scale,
     ...(s.neurons !== undefined ? { neurons: s.neurons } : {}),
+    ...(s.topK !== undefined ? { topK: s.topK } : {}),
+    ...(s.autoModeId !== undefined ? { autoModeId: s.autoModeId } : {}),
+    ...(s.autoModeIteration !== undefined
+      ? { autoModeIteration: s.autoModeIteration }
+      : {}),
     currentIndex: s.currentIndex,
     bestIndex: s.bestIndex,
     total: s.combos.length,
@@ -537,6 +612,7 @@ async function runSweepCombo(
       experimentId: `sweep:${s.id}:${combo.index}`,
       scale: s.scale,
       ...(s.neurons !== undefined ? { neurons: s.neurons } : {}),
+      ...(s.topK !== undefined ? { topK: s.topK } : {}),
       status: "pending",
       createdAt: Date.now(),
       startedAt: null,
@@ -619,32 +695,52 @@ async function runSweepCombo(
   });
 }
 
+// Default sweep grid for Phase 0 (v13 spec).
+//   τ ∈ {0.7, 1.0, 1.5} · γ ∈ {1.0, 1.5, 2.0, 3.0}
+//   β ∈ {0.2, 0.4, 0.6} · δ ∈ {0.1, 0.3, 0.5} · σ ∈ {0.01, 0.02, 0.05}
+// = 3 × 4 × 3 × 3 × 3 = 324 combos. β and δ are SWAPPED versus v12 — v13
+// pushes more entropy in and lets temporal coherence stay narrower.
+const PHASE0_DEFAULT_RANGES: Record<string, number[]> = {
+  TAU_ATT: [0.7, 1.0, 1.5],
+  GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
+  BETA_ENTROPY: [0.2, 0.4, 0.6],
+  DELTA_TEMPORAL: [0.1, 0.3, 0.5],
+  NOISE_SIGMA: [0.01, 0.02, 0.05],
+};
+// v13 spec: combos sample for 50 000 ticks (up from 20 000) so the
+// existence-gate streak threshold of ≥1000 ticks has 50× headroom to settle.
+const PHASE0_DEFAULT_TICKS = 50000;
+const PHASE0_MAX_TICKS = 50000;
+
 router.post("/sweeps", (req, res) => {
   const body = (req.body ?? {}) as {
     ranges?: Record<string, number[]>;
     ticksPerCombo?: number;
     scale?: 81 | 810 | 81000;
     neurons?: number;
+    topK?: number;
+    autoModeId?: string;
+    autoModeIteration?: number;
   };
-  // Default sweep: post-B3 expanded Phase 0 hunt for the Existence Gate.
-  // Coherence-amplifying global field + targeted ranges per the programme:
-  // 3 × 4 × 3 × 3 × 3 = 324 combos at the upper bound.
-  const ranges: Record<string, number[]> = body.ranges ?? {
-    TAU_ATT: [0.7, 1.0, 1.5],
-    GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
-    DELTA_TEMPORAL: [0.2, 0.4, 0.6],
-    BETA_ENTROPY: [0.1, 0.3, 0.5],
-    NOISE_SIGMA: [0.01, 0.02, 0.05],
-  };
-  const ticksPerCombo = Math.min(Math.max(body.ticksPerCombo ?? 2500, 500), 50000);
+  const ranges: Record<string, number[]> = body.ranges ?? PHASE0_DEFAULT_RANGES;
+  const ticksPerCombo = Math.min(
+    Math.max(body.ticksPerCombo ?? PHASE0_DEFAULT_TICKS, 500),
+    PHASE0_MAX_TICKS,
+  );
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
   const neurons = clampNeurons(body.neurons);
+  const topK = clampTopK(body.topK);
   const grid = cartesian(ranges);
   if (grid.length === 0 || grid.length > 400) {
     res.status(400).json({ error: "ranges must produce 1..400 combinations" });
     return;
   }
   const id = `s${nextSweepId++}`;
+  // Top-K override is converted to TOPK_FRACTION using the resolved N once and
+  // stamped into every combo's params, so it travels with the saved sweep.
+  const N = effectiveN(scale, neurons);
+  const topkFraction =
+    topK !== undefined ? Math.max(1 / N, Math.min(1, topK / N)) : undefined;
   const sweep: SweepRecord = {
     id,
     status: "pending",
@@ -653,9 +749,19 @@ router.post("/sweeps", (req, res) => {
     ticksPerCombo,
     scale,
     ...(neurons !== undefined ? { neurons } : {}),
+    ...(topK !== undefined ? { topK } : {}),
+    ...(typeof body.autoModeId === "string" ? { autoModeId: body.autoModeId } : {}),
+    ...(typeof body.autoModeIteration === "number"
+      ? { autoModeIteration: body.autoModeIteration }
+      : {}),
     combos: grid.map((p, i) => ({
       index: i,
-      params: { ATTN_MODE: "soft", USE_BOTTLENECK: false, ...p },
+      params: {
+        ATTN_MODE: "soft",
+        USE_BOTTLENECK: false,
+        ...(topkFraction !== undefined ? { TOPK_FRACTION: topkFraction } : {}),
+        ...p,
+      },
       status: "pending",
       gateOpened: false,
       gateStreak: 0,
@@ -801,6 +907,9 @@ interface BatchRecord {
   scale: 81 | 810 | 81000;
   // Optional neuron-count override applied to every item/repeat in this batch.
   neurons?: number;
+  // Optional Top-K override (absolute count) applied to every item via
+  // TOPK_FRACTION = topK / N. Stored on the batch so reruns preserve it.
+  topK?: number;
   ticksPerExperiment: number | null;
   repeats: number;
   // Base seed; per-repeat seeds derived as deriveSeed(baseSeed, item.index, r).
@@ -877,6 +986,9 @@ function loadPersistedBatches(): void {
         ...(typeof (data as { neurons?: number }).neurons === "number"
           ? { neurons: (data as { neurons: number }).neurons }
           : {}),
+        ...(typeof (data as { topK?: number }).topK === "number"
+          ? { topK: (data as { topK: number }).topK }
+          : {}),
         ticksPerExperiment: data.ticksPerExperiment,
         repeats: data.repeats,
         baseSeed: typeof data.baseSeed === "number" ? data.baseSeed : 0,
@@ -940,6 +1052,7 @@ function serializeBatch(b: BatchRecord) {
     status: b.status,
     scale: b.scale,
     ...(b.neurons !== undefined ? { neurons: b.neurons } : {}),
+    ...(b.topK !== undefined ? { topK: b.topK } : {}),
     ticksPerExperiment: b.ticksPerExperiment,
     repeats: b.repeats,
     baseSeed: b.baseSeed,
@@ -1014,12 +1127,20 @@ async function runBatchItem(
       item.runIds.push(id);
       item.ticksTotal = ticks;
 
+      // Top-K override at the batch level merges into customParams as
+      // TOPK_FRACTION (resolved against the run's effective N). When a chosen
+      // experiment is specifically a top-K ablation it may overwrite the
+      // experiment's own TOPK_FRACTION — that's the documented behaviour of
+      // the override, mirroring how `neurons` overrides per-experiment N.
+      const customParams = applyTopKOverride(undefined, b.topK, b.scale, b.neurons);
+
       const handle = startRun({
         scale: b.scale,
         ...(b.neurons !== undefined ? { neurons: b.neurons } : {}),
         experimentId: exp.id,
         ticks,
         seed: seedForRun,
+        ...(customParams ? { customParams: customParams as Record<string, never> } : {}),
         onStart: (info) => {
           record.start = info;
           record.seed = info.seed;
@@ -1087,6 +1208,7 @@ router.post("/batches", (req, res) => {
     all?: boolean;
     scale?: 81 | 810 | 81000;
     neurons?: number;
+    topK?: number;
     ticksPerExperiment?: number;
     repeats?: number;
     seed?: number;
@@ -1105,6 +1227,7 @@ router.post("/batches", (req, res) => {
   }
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
   const neurons = clampNeurons(body.neurons);
+  const topK = clampTopK(body.topK);
   const repeats = Math.min(Math.max(body.repeats ?? 1, 1), 5);
   const ticksPerExperiment =
     typeof body.ticksPerExperiment === "number"
@@ -1143,6 +1266,7 @@ router.post("/batches", (req, res) => {
     status: "pending",
     scale,
     ...(neurons !== undefined ? { neurons } : {}),
+    ...(topK !== undefined ? { topK } : {}),
     ticksPerExperiment,
     repeats,
     baseSeed,
@@ -1544,6 +1668,9 @@ router.post("/batches/:id/rerun", (req, res) => {
     status: "pending",
     scale: src.scale,
     ...(src.neurons !== undefined ? { neurons: src.neurons } : {}),
+    // Re-runs preserve the source batch's Top-K override so the new batch is
+    // a faithful replay (same neurons, same Top-K, same ticks per experiment).
+    ...(src.topK !== undefined ? { topK: src.topK } : {}),
     ticksPerExperiment: src.ticksPerExperiment,
     repeats,
     baseSeed,
@@ -1644,12 +1771,556 @@ router.get("/batches/:id/stream", (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-Mode — chains parameter sweeps that refine around the best combo until
+// the Existence Gate streak target is hit (default ≥1000 ticks per v13) or a
+// max-iterations cap is reached. Each iteration is a stored Sweep record so
+// every combo's full history persists to data/sweeps for later inspection;
+// the AutoMode record itself stores the orchestration metadata under
+// data/automode/<id>.json. Both survive API restarts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface AutoModeIteration {
+  index: number;
+  sweepId: string;
+  ranges: Record<string, number[]>;
+  ticksPerCombo: number;
+  status: "pending" | "running" | "completed" | "cancelled";
+  bestComboIndex: number;
+  bestParams: Record<string, number | boolean | string> | null;
+  bestPhi: number;
+  bestSC: number;
+  bestPU: number;
+  bestCAR: number;
+  bestGateStreak: number;
+  passedTarget: boolean;
+  startedAt: number;
+  completedAt: number | null;
+}
+
+interface AutoModeRecord {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled" | "succeeded";
+  createdAt: number;
+  completedAt: number | null;
+  scale: 81 | 810 | 81000;
+  neurons?: number;
+  topK?: number;
+  ticksPerCombo: number;
+  maxIterations: number;
+  gateStreakTarget: number;
+  baseRanges: Record<string, number[]>;
+  iterations: AutoModeIteration[];
+  currentIteration: number;
+  // Snapshot of the best combo across all iterations (winner candidate).
+  bestSweepId: string | null;
+  bestComboIndex: number;
+  bestParams: Record<string, number | boolean | string> | null;
+  bestGateStreak: number;
+  passed: boolean;
+  cancelled: boolean;
+  subscribers: Set<Response>;
+}
+
+const automodes = new Map<string, AutoModeRecord>();
+let nextAutoModeId = 1;
+const MAX_AUTOMODES = 10;
+
+const AUTOMODE_DIR = join(process.cwd(), "data", "automode");
+try {
+  mkdirSync(AUTOMODE_DIR, { recursive: true });
+} catch {
+  /* best-effort */
+}
+
+function serializeAutoMode(a: AutoModeRecord) {
+  return {
+    id: a.id,
+    status: a.status,
+    createdAt: a.createdAt,
+    completedAt: a.completedAt,
+    scale: a.scale,
+    ...(a.neurons !== undefined ? { neurons: a.neurons } : {}),
+    ...(a.topK !== undefined ? { topK: a.topK } : {}),
+    ticksPerCombo: a.ticksPerCombo,
+    maxIterations: a.maxIterations,
+    gateStreakTarget: a.gateStreakTarget,
+    baseRanges: a.baseRanges,
+    currentIteration: a.currentIteration,
+    bestSweepId: a.bestSweepId,
+    bestComboIndex: a.bestComboIndex,
+    bestParams: a.bestParams,
+    bestGateStreak: a.bestGateStreak,
+    passed: a.passed,
+    iterations: a.iterations,
+  };
+}
+
+function persistAutoMode(a: AutoModeRecord): void {
+  try {
+    writeFileSync(
+      join(AUTOMODE_DIR, `${a.id}.json`),
+      JSON.stringify(serializeAutoMode(a), null, 2),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+function loadPersistedAutoModes(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(AUTOMODE_DIR);
+  } catch {
+    return;
+  }
+  let maxId = 0;
+  for (const file of entries) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const raw = readFileSync(join(AUTOMODE_DIR, file), "utf8");
+      const data = JSON.parse(raw) as ReturnType<typeof serializeAutoMode>;
+      const reloadStatus =
+        data.status === "running" || data.status === "pending"
+          ? "cancelled"
+          : data.status;
+      const rec: AutoModeRecord = {
+        id: data.id,
+        status: reloadStatus,
+        createdAt: data.createdAt,
+        completedAt: data.completedAt ?? Date.now(),
+        scale: data.scale,
+        ...(typeof (data as { neurons?: number }).neurons === "number"
+          ? { neurons: (data as { neurons: number }).neurons }
+          : {}),
+        ...(typeof (data as { topK?: number }).topK === "number"
+          ? { topK: (data as { topK: number }).topK }
+          : {}),
+        ticksPerCombo: data.ticksPerCombo,
+        maxIterations: data.maxIterations,
+        gateStreakTarget: data.gateStreakTarget,
+        baseRanges: data.baseRanges,
+        iterations: data.iterations ?? [],
+        currentIteration: data.currentIteration,
+        bestSweepId: data.bestSweepId ?? null,
+        bestComboIndex: data.bestComboIndex ?? -1,
+        bestParams: data.bestParams ?? null,
+        bestGateStreak: data.bestGateStreak ?? 0,
+        passed: data.passed ?? false,
+        cancelled: reloadStatus === "cancelled",
+        subscribers: new Set(),
+      };
+      automodes.set(rec.id, rec);
+      const num = Number(rec.id.replace(/^a/, ""));
+      if (Number.isFinite(num) && num > maxId) maxId = num;
+    } catch {
+      /* skip corrupt */
+    }
+  }
+  if (maxId >= nextAutoModeId) nextAutoModeId = maxId + 1;
+}
+loadPersistedAutoModes();
+
+function broadcastAutoMode(a: AutoModeRecord, event: string, data: unknown): void {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const sub of a.subscribers) {
+    try {
+      sub.write(payload);
+    } catch {
+      a.subscribers.delete(sub);
+    }
+  }
+}
+
+function pruneAutoModes(): void {
+  if (automodes.size <= MAX_AUTOMODES) return;
+  const sortable = [...automodes.values()].sort((a, b) => a.createdAt - b.createdAt);
+  for (const a of sortable) {
+    if (automodes.size <= MAX_AUTOMODES) break;
+    if (a.status === "running" || a.status === "pending") continue;
+    automodes.delete(a.id);
+  }
+}
+
+// Refine a numeric parameter range around `center` by halving the spread each
+// iteration. Returns 3 values: center − step, center, center + step. The
+// minimum is clamped to a small positive epsilon so noise / fractions stay
+// > 0. Iteration 1 uses the full base spread; iteration 2 uses ½; etc.
+function refineRange(
+  baseValues: number[],
+  center: number,
+  iteration: number,
+): number[] {
+  if (baseValues.length < 2) return [center];
+  const sorted = [...baseValues].sort((a, b) => a - b);
+  const baseStep =
+    (sorted[sorted.length - 1] as number) - (sorted[0] as number);
+  if (baseStep <= 0) return [center];
+  const stepFactor = Math.pow(0.5, Math.max(0, iteration - 1));
+  const step = (baseStep / 2) * stepFactor;
+  const eps = 1e-4;
+  const lo = Math.max(eps, center - step);
+  const hi = center + step;
+  // Deduplicate (after clamping the lo could equal center).
+  const candidates = [lo, center, hi].map((v) => Number(v.toFixed(6)));
+  return Array.from(new Set(candidates));
+}
+
+function refineRangesAroundCombo(
+  baseRanges: Record<string, number[]>,
+  bestParams: Record<string, number | boolean | string>,
+  iteration: number,
+): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
+  for (const [key, values] of Object.entries(baseRanges)) {
+    const center = bestParams[key];
+    if (typeof center !== "number" || !Number.isFinite(center)) {
+      out[key] = values;
+      continue;
+    }
+    out[key] = refineRange(values, center, iteration);
+  }
+  return out;
+}
+
+// Run one auto-mode iteration: launches a sweep with the supplied ranges and
+// awaits its completion. Returns the resulting AutoModeIteration record (with
+// the best combo summary) so the orchestrator can decide whether to refine.
+async function runAutoModeIteration(
+  a: AutoModeRecord,
+  iterIndex: number,
+  ranges: Record<string, number[]>,
+): Promise<AutoModeIteration> {
+  const grid = cartesian(ranges);
+  // Top-K → TOPK_FRACTION conversion mirrors POST /sweeps so the iteration's
+  // sweep is a faithful self-contained record.
+  const N = effectiveN(a.scale, a.neurons);
+  const topkFraction =
+    a.topK !== undefined ? Math.max(1 / N, Math.min(1, a.topK / N)) : undefined;
+
+  const sweepId = `s${nextSweepId++}`;
+  const sweep: SweepRecord = {
+    id: sweepId,
+    status: "pending",
+    createdAt: Date.now(),
+    completedAt: null,
+    ticksPerCombo: a.ticksPerCombo,
+    scale: a.scale,
+    ...(a.neurons !== undefined ? { neurons: a.neurons } : {}),
+    ...(a.topK !== undefined ? { topK: a.topK } : {}),
+    autoModeId: a.id,
+    autoModeIteration: iterIndex,
+    combos: grid.map((p, i) => ({
+      index: i,
+      params: {
+        ATTN_MODE: "soft",
+        USE_BOTTLENECK: false,
+        ...(topkFraction !== undefined ? { TOPK_FRACTION: topkFraction } : {}),
+        ...p,
+      },
+      status: "pending",
+      gateOpened: false,
+      gateStreak: 0,
+      finalPhi: 0,
+      finalSC: 0,
+      finalPU: 0,
+      finalCAR: 0,
+      bestCAR: 0,
+      ticksDone: 0,
+      runId: null,
+    })),
+    currentIndex: 0,
+    bestIndex: 0,
+    cancelled: false,
+    subscribers: new Set(),
+  };
+  sweeps.set(sweepId, sweep);
+  pruneSweeps();
+
+  const iteration: AutoModeIteration = {
+    index: iterIndex,
+    sweepId,
+    ranges,
+    ticksPerCombo: a.ticksPerCombo,
+    status: "running",
+    bestComboIndex: -1,
+    bestParams: null,
+    bestPhi: 0,
+    bestSC: 0,
+    bestPU: 0,
+    bestCAR: 0,
+    bestGateStreak: 0,
+    passedTarget: false,
+    startedAt: Date.now(),
+    completedAt: null,
+  };
+  a.iterations.push(iteration);
+  broadcastAutoMode(a, "iteration_start", {
+    autoModeId: a.id,
+    iteration,
+    sweep: serializeSweep(sweep),
+  });
+
+  sweep.status = "running";
+  broadcastSweep(sweep, "sweep_start", serializeSweep(sweep));
+  for (let i = 0; i < sweep.combos.length; i++) {
+    if (sweep.cancelled || a.cancelled) break;
+    sweep.currentIndex = i;
+    await runSweepCombo(sweep, sweep.combos[i] as SweepCombo);
+    // Forward live progress to auto-mode subscribers as well so the UI can
+    // render combo-level progress without needing a second SSE connection.
+    const combo = sweep.combos[i] as SweepCombo;
+    broadcastAutoMode(a, "combo_complete", {
+      autoModeId: a.id,
+      iterationIndex: iterIndex,
+      sweepId,
+      combo,
+      bestIndex: sweep.bestIndex,
+    });
+  }
+  sweep.status = sweep.cancelled || a.cancelled ? "cancelled" : "completed";
+  sweep.completedAt = Date.now();
+  persistSweep(sweep);
+  broadcastSweep(sweep, "sweep_complete", serializeSweep(sweep));
+
+  const best = sweep.combos[sweep.bestIndex] ?? null;
+  iteration.status = a.cancelled ? "cancelled" : "completed";
+  iteration.completedAt = Date.now();
+  iteration.bestComboIndex = sweep.bestIndex;
+  iteration.bestParams = best ? best.params : null;
+  iteration.bestPhi = best?.finalPhi ?? 0;
+  iteration.bestSC = best?.finalSC ?? 0;
+  iteration.bestPU = best?.finalPU ?? 0;
+  iteration.bestCAR = best?.bestCAR ?? 0;
+  iteration.bestGateStreak = best?.gateStreak ?? 0;
+  iteration.passedTarget =
+    !!best && best.gateOpened && (best.gateStreak ?? 0) >= a.gateStreakTarget;
+  return iteration;
+}
+
+router.post("/automode", (req, res) => {
+  const body = (req.body ?? {}) as {
+    scale?: 81 | 810 | 81000;
+    neurons?: number;
+    topK?: number;
+    ticksPerCombo?: number;
+    maxIterations?: number;
+    gateStreakTarget?: number;
+    baseRanges?: Record<string, number[]>;
+  };
+  const scale = (body.scale ?? 81) as 81 | 810 | 81000;
+  const neurons = clampNeurons(body.neurons);
+  const topK = clampTopK(body.topK);
+  const ticksPerCombo = Math.min(
+    Math.max(body.ticksPerCombo ?? PHASE0_DEFAULT_TICKS, 500),
+    PHASE0_MAX_TICKS,
+  );
+  const maxIterations = Math.min(Math.max(body.maxIterations ?? 4, 1), 10);
+  const gateStreakTarget = Math.min(
+    Math.max(body.gateStreakTarget ?? 1000, 1),
+    PHASE0_MAX_TICKS,
+  );
+  const baseRanges = body.baseRanges ?? PHASE0_DEFAULT_RANGES;
+
+  // Validate that the first iteration won't blow past the 400-combo cap.
+  const initialGrid = cartesian(baseRanges);
+  if (initialGrid.length === 0 || initialGrid.length > 400) {
+    res.status(400).json({ error: "baseRanges must produce 1..400 combinations" });
+    return;
+  }
+
+  const id = `a${nextAutoModeId++}`;
+  const record: AutoModeRecord = {
+    id,
+    status: "pending",
+    createdAt: Date.now(),
+    completedAt: null,
+    scale,
+    ...(neurons !== undefined ? { neurons } : {}),
+    ...(topK !== undefined ? { topK } : {}),
+    ticksPerCombo,
+    maxIterations,
+    gateStreakTarget,
+    baseRanges,
+    iterations: [],
+    currentIteration: 0,
+    bestSweepId: null,
+    bestComboIndex: -1,
+    bestParams: null,
+    bestGateStreak: 0,
+    passed: false,
+    cancelled: false,
+    subscribers: new Set(),
+  };
+  automodes.set(id, record);
+  pruneAutoModes();
+
+  (async () => {
+    record.status = "running";
+    broadcastAutoMode(record, "automode_start", serializeAutoMode(record));
+    try {
+      let nextRanges: Record<string, number[]> = baseRanges;
+      for (let i = 0; i < maxIterations; i++) {
+        if (record.cancelled) break;
+        record.currentIteration = i;
+        const it = await runAutoModeIteration(record, i, nextRanges);
+        // Update global best if this iteration's best beats prior best.
+        if (
+          it.bestGateStreak > record.bestGateStreak ||
+          (it.bestGateStreak === record.bestGateStreak &&
+            it.bestCAR > 0 &&
+            (!record.bestParams ||
+              it.bestCAR >
+                (record.iterations[record.iterations.length - 2]?.bestCAR ??
+                  0)))
+        ) {
+          record.bestSweepId = it.sweepId;
+          record.bestComboIndex = it.bestComboIndex;
+          record.bestParams = it.bestParams;
+          record.bestGateStreak = it.bestGateStreak;
+        }
+        persistAutoMode(record);
+        broadcastAutoMode(record, "iteration_complete", {
+          autoModeId: record.id,
+          iteration: it,
+          bestSweepId: record.bestSweepId,
+          bestParams: record.bestParams,
+          bestGateStreak: record.bestGateStreak,
+        });
+        if (it.passedTarget) {
+          record.passed = true;
+          break;
+        }
+        // Refine for the next iteration around this iteration's best combo.
+        if (it.bestParams) {
+          nextRanges = refineRangesAroundCombo(baseRanges, it.bestParams, i + 1);
+          // If refinement collapsed every dimension to a single value, we
+          // can't make progress — bail out.
+          const collapsedGrid = cartesian(nextRanges);
+          if (collapsedGrid.length === 0) break;
+        }
+      }
+      record.status = record.cancelled
+        ? "cancelled"
+        : record.passed
+          ? "succeeded"
+          : "completed";
+    } catch (err) {
+      record.status = "completed";
+      broadcastAutoMode(record, "error", {
+        message: (err as Error).message,
+      });
+    } finally {
+      record.completedAt = Date.now();
+      persistAutoMode(record);
+      broadcastAutoMode(record, "automode_complete", serializeAutoMode(record));
+      for (const sub of record.subscribers) {
+        try {
+          sub.end();
+        } catch {
+          /* */
+        }
+      }
+      record.subscribers.clear();
+    }
+  })().catch(() => undefined);
+
+  res.status(201).json({
+    id,
+    maxIterations,
+    gateStreakTarget,
+    initialCombos: initialGrid.length,
+  });
+});
+
+router.get("/automode", (_req, res) => {
+  res.json({
+    automodes: [...automodes.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(serializeAutoMode),
+  });
+});
+
+router.get("/automode/:id", (req, res) => {
+  const a = automodes.get(req.params.id as string);
+  if (!a) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json(serializeAutoMode(a));
+});
+
+router.delete("/automode/:id", (req, res) => {
+  const a = automodes.get(req.params.id as string);
+  if (!a) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  a.cancelled = true;
+  // Cancel the in-flight sweep (if any) and its child run; the orchestrator
+  // loop checks `a.cancelled` between iterations and bails out cleanly.
+  const cur = a.iterations[a.iterations.length - 1];
+  if (cur) {
+    const sw = sweeps.get(cur.sweepId);
+    if (sw) {
+      sw.cancelled = true;
+      const combo = sw.combos[sw.currentIndex];
+      if (combo?.runId) {
+        const child = runs.get(combo.runId);
+        if (child) child.cancel();
+      }
+    }
+  }
+  res.json({ id: a.id, status: "cancelled" });
+});
+
+router.get("/automode/:id/stream", (req, res) => {
+  const a = automodes.get(req.params.id as string);
+  if (!a) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders();
+  res.write(`event: snapshot\ndata: ${JSON.stringify(serializeAutoMode(a))}\n\n`);
+  if (
+    a.status === "completed" ||
+    a.status === "cancelled" ||
+    a.status === "succeeded"
+  ) {
+    res.write(
+      `event: automode_complete\ndata: ${JSON.stringify(serializeAutoMode(a))}\n\n`,
+    );
+    res.end();
+    return;
+  }
+  a.subscribers.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`: heartbeat ${Date.now()}\n\n`);
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    a.subscribers.delete(res);
+  });
+});
+
 function serializeRun(r: RunRecord, full: boolean) {
   return {
     id: r.id,
     experimentId: r.experimentId,
     scale: r.scale,
     ...(r.neurons !== undefined ? { neurons: r.neurons } : {}),
+    ...(r.topK !== undefined ? { topK: r.topK } : {}),
     // Effective grid size as actually built by the simulator (N = G*G).
     ...(r.start ? { N: r.start.N, G: Math.round(Math.sqrt(r.start.N)) } : {}),
     status: r.status,
@@ -1723,6 +2394,14 @@ export function markRunningWorkInterrupted(): {
       }
       persistSweep(s);
       touchedSweeps++;
+    }
+  }
+  for (const a of automodes.values()) {
+    if (a.status === "running" || a.status === "pending") {
+      a.status = "cancelled";
+      a.cancelled = true;
+      a.completedAt = now;
+      persistAutoMode(a);
     }
   }
   return { batches: touchedBatches, sweeps: touchedSweeps };

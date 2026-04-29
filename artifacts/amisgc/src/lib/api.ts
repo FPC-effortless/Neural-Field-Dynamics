@@ -169,6 +169,10 @@ export interface CreateRunRequest {
   // Optional override of total neuron count (rebuilds the simulator grid).
   // Server clamps to [9, 102_400]; takes precedence over `scale` when set.
   neurons?: number;
+  // Optional Top-K override (absolute count of conscious neurons per tick).
+  // Server converts to TOPK_FRACTION = topK / N at run time. Clamped to
+  // [1, 102_400]. Wins over any TOPK_FRACTION supplied via customParams.
+  topK?: number;
   ticks?: number;
   customParams?: Record<string, number | boolean>;
   type?: "experiment" | "arc";
@@ -303,6 +307,13 @@ export interface SweepDetail {
   ticksPerCombo: number;
   scale: 81 | 810 | 81000;
   neurons?: number;
+  // Top-K override (absolute count) the sweep was launched with. Each combo's
+  // params already carry the converted TOPK_FRACTION; this field surfaces the
+  // user-supplied integer for display / re-launch.
+  topK?: number;
+  // Set when this sweep was launched as one iteration of an auto-mode session.
+  autoModeId?: string;
+  autoModeIteration?: number;
   currentIndex: number;
   bestIndex: number;
   total: number;
@@ -314,6 +325,7 @@ export interface CreateSweepRequest {
   ticksPerCombo?: number;
   scale?: 81 | 810 | 81000;
   neurons?: number;
+  topK?: number;
 }
 
 export const sweepApi = {
@@ -377,6 +389,8 @@ export interface BatchDetail {
   status: BatchStatus;
   scale: 81 | 810 | 81000;
   neurons?: number;
+  // Top-K override (absolute count) applied to every item in the batch.
+  topK?: number;
   ticksPerExperiment: number | null;
   repeats: number;
   baseSeed?: number;
@@ -395,6 +409,7 @@ export interface CreateBatchRequest {
   all?: boolean;
   scale?: 81 | 810 | 81000;
   neurons?: number;
+  topK?: number;
   ticksPerExperiment?: number;
   repeats?: number;
   seed?: number;
@@ -654,6 +669,156 @@ export function subscribeSweep(id: string, handlers: SweepHandlers): () => void 
   es.addEventListener("sweep_complete", (ev: MessageEvent) => {
     try {
       handlers.onSweepComplete?.(JSON.parse(ev.data) as SweepDetail);
+    } catch {
+      /* ignore */
+    }
+    es.close();
+  });
+  es.addEventListener("error", () => handlers.onError?.("stream error"));
+  return () => es.close();
+}
+
+// ─── Auto-Mode client ────────────────────────────────────────────────────────
+// Auto-Mode chains parameter sweeps that progressively refine around the
+// best combo until the Existence Gate is held for ≥`gateStreakTarget` ticks
+// (1000 by v13 spec) or `maxIterations` is reached. Each iteration is itself
+// a normal Sweep (so its combos persist alongside hand-launched sweeps).
+
+export interface AutoModeIterationSummary {
+  index: number;
+  sweepId: string;
+  ranges: Record<string, number[]>;
+  ticksPerCombo: number;
+  status: "pending" | "running" | "completed" | "cancelled";
+  bestComboIndex: number;
+  bestParams: Record<string, number | boolean | string> | null;
+  bestPhi: number;
+  bestSC: number;
+  bestPU: number;
+  bestCAR: number;
+  bestGateStreak: number;
+  passedTarget: boolean;
+  startedAt: number;
+  completedAt: number | null;
+}
+
+export interface AutoModeDetail {
+  id: string;
+  status: "pending" | "running" | "completed" | "cancelled" | "succeeded";
+  createdAt: number;
+  completedAt: number | null;
+  scale: 81 | 810 | 81000;
+  neurons?: number;
+  topK?: number;
+  ticksPerCombo: number;
+  maxIterations: number;
+  gateStreakTarget: number;
+  baseRanges: Record<string, number[]>;
+  currentIteration: number;
+  bestSweepId: string | null;
+  bestComboIndex: number;
+  bestParams: Record<string, number | boolean | string> | null;
+  bestGateStreak: number;
+  passed: boolean;
+  iterations: AutoModeIterationSummary[];
+}
+
+export interface CreateAutoModeRequest {
+  scale?: 81 | 810 | 81000;
+  neurons?: number;
+  topK?: number;
+  ticksPerCombo?: number;
+  maxIterations?: number;
+  gateStreakTarget?: number;
+  baseRanges?: Record<string, number[]>;
+}
+
+export const autoModeApi = {
+  list: () =>
+    jsonFetch<{ automodes: AutoModeDetail[] }>(`${API_PREFIX}/automode`),
+  get: (id: string) => jsonFetch<AutoModeDetail>(`${API_PREFIX}/automode/${id}`),
+  create: (body: CreateAutoModeRequest) =>
+    jsonFetch<{
+      id: string;
+      maxIterations: number;
+      gateStreakTarget: number;
+      initialCombos: number;
+    }>(`${API_PREFIX}/automode`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  cancel: (id: string) =>
+    jsonFetch<{ id: string; status: string }>(`${API_PREFIX}/automode/${id}`, {
+      method: "DELETE",
+    }),
+  streamUrl: (id: string) => `${API_PREFIX}/automode/${id}/stream`,
+};
+
+export interface AutoModeHandlers {
+  onSnapshot?: (a: AutoModeDetail) => void;
+  onAutoModeStart?: (a: AutoModeDetail) => void;
+  onIterationStart?: (e: {
+    autoModeId: string;
+    iteration: AutoModeIterationSummary;
+    sweep: SweepDetail;
+  }) => void;
+  onComboComplete?: (e: {
+    autoModeId: string;
+    iterationIndex: number;
+    sweepId: string;
+    combo: SweepCombo;
+    bestIndex: number;
+  }) => void;
+  onIterationComplete?: (e: {
+    autoModeId: string;
+    iteration: AutoModeIterationSummary;
+    bestSweepId: string | null;
+    bestParams: Record<string, number | boolean | string> | null;
+    bestGateStreak: number;
+  }) => void;
+  onAutoModeComplete?: (a: AutoModeDetail) => void;
+  onError?: (msg: string) => void;
+}
+
+export function subscribeAutoMode(
+  id: string,
+  handlers: AutoModeHandlers,
+): () => void {
+  const es = new EventSource(autoModeApi.streamUrl(id));
+  const bind = <T,>(name: string, fn?: (data: T) => void) => {
+    if (!fn) return;
+    es.addEventListener(name, (ev: MessageEvent) => {
+      try {
+        fn(JSON.parse(ev.data) as T);
+      } catch {
+        /* ignore malformed */
+      }
+    });
+  };
+  bind<AutoModeDetail>("snapshot", handlers.onSnapshot);
+  bind<AutoModeDetail>("automode_start", handlers.onAutoModeStart);
+  bind<{
+    autoModeId: string;
+    iteration: AutoModeIterationSummary;
+    sweep: SweepDetail;
+  }>("iteration_start", handlers.onIterationStart);
+  bind<{
+    autoModeId: string;
+    iterationIndex: number;
+    sweepId: string;
+    combo: SweepCombo;
+    bestIndex: number;
+  }>("combo_complete", handlers.onComboComplete);
+  bind<{
+    autoModeId: string;
+    iteration: AutoModeIterationSummary;
+    bestSweepId: string | null;
+    bestParams: Record<string, number | boolean | string> | null;
+    bestGateStreak: number;
+  }>("iteration_complete", handlers.onIterationComplete);
+  es.addEventListener("automode_complete", (ev: MessageEvent) => {
+    try {
+      handlers.onAutoModeComplete?.(JSON.parse(ev.data) as AutoModeDetail);
     } catch {
       /* ignore */
     }
