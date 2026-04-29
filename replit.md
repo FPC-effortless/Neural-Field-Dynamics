@@ -83,10 +83,12 @@ The previous version pushed the user back to the bottom of the page when long-ru
 
 ### Web (this repo)
 
-Both workflows start automatically:
+A single `Start application` workflow runs `bash scripts/dev.sh`, which boots both processes:
 
-- `artifacts/api-server: API Server` — Express on `PORT` (8080), routes mounted at `/api/*`
-- `artifacts/amisgc: web` — Vite dev server, proxied at the artifact base path
+- API server — Express on `PORT=8080`, routes mounted at `/api/*`
+- Web UI — Vite dev server on `PORT=5000`, `BASE_PATH=/`, with `/api` proxied to `http://localhost:8080` (also forwards SSE / WebSocket upgrades)
+
+The Vite proxy target is overridable via the `API_PROXY_TARGET` env var.
 
 ### CLI
 
