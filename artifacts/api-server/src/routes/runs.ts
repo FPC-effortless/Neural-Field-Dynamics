@@ -29,6 +29,13 @@ import {
   PHASE_LOCK_GATE_STREAK_REQUIRED,
 } from "../lib/phaseLockStore.js";
 import { updateGlobalBest } from "../lib/automodeBest.js";
+import {
+  classifyGate,
+  classifyFailureReason,
+  nextStepRecommendation,
+  type ComboMetrics,
+} from "../lib/plainEnglish.js";
+import { PRESETS } from "../lib/presets.js";
 
 interface RunRecord {
   id: string;
@@ -2035,6 +2042,46 @@ try {
 }
 
 function serializeAutoMode(a: AutoModeRecord) {
+  // Map each iteration to the ComboMetrics shape the explainer expects.
+  // The explainer is a pure helper; we attach its outputs to every
+  // serialization so dashboard cards never have to recompute classification.
+  const metricIterations: ComboMetrics[] = a.iterations.map((it) => ({
+    finalPhi: it.bestPhi,
+    finalSC: it.bestSC,
+    finalPU: it.bestPU,
+    finalCAR: it.bestCAR,
+    bestCAR: it.bestCAR,
+    gateOpened: it.passedTarget || (it.bestGateStreak ?? 0) > 0,
+    gateStreak: it.bestGateStreak,
+    ticksDone: it.ticksPerCombo,
+  }));
+  // Pick the iteration with the best gate streak (CAR as tiebreaker) for
+  // verdict/failure-reason classification — same priority the orchestrator
+  // uses to choose the global best.
+  const bestForVerdict = metricIterations.reduce<ComboMetrics | null>(
+    (acc, it) => {
+      if (!acc) return it;
+      const a = acc.gateStreak ?? 0;
+      const b = it.gateStreak ?? 0;
+      if (b > a) return it;
+      if (b === a && (it.bestCAR ?? 0) > (acc.bestCAR ?? 0)) return it;
+      return acc;
+    },
+    null,
+  );
+  const gate = classifyGate(bestForVerdict, a.gateStreakTarget);
+  const failureReason = classifyFailureReason(
+    bestForVerdict,
+    a.gateStreakTarget,
+  );
+  const nextStep = nextStepRecommendation({
+    status: a.status,
+    iterations: metricIterations,
+    gateStreakTarget: a.gateStreakTarget,
+    maxIterations: a.maxIterations,
+    bestGateStreak: a.bestGateStreak,
+    bestCAR: a.bestCAR,
+  });
   return {
     id: a.id,
     status: a.status,
@@ -2055,6 +2102,10 @@ function serializeAutoMode(a: AutoModeRecord) {
     bestCAR: a.bestCAR,
     passed: a.passed,
     iterations: a.iterations,
+    // Plain-English explainer fields the layman dashboard renders directly.
+    gate,
+    failureReason,
+    nextStep,
   };
 }
 
@@ -2300,6 +2351,13 @@ async function runAutoModeIteration(
     !!best && best.gateOpened && (best.gateStreak ?? 0) >= a.gateStreakTarget;
   return iteration;
 }
+
+// Layman-facing preset registry. The Lab Home in the dashboard reads this
+// once on mount and renders one card per preset — clicking "Start" POSTs
+// the preset's `body` straight back to /automode below.
+router.get("/presets", (_req, res) => {
+  res.json({ presets: PRESETS });
+});
 
 router.post("/automode", (req, res) => {
   const body = (req.body ?? {}) as {

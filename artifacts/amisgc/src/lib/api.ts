@@ -761,8 +761,58 @@ export interface AutoModeDetail {
   bestComboIndex: number;
   bestParams: Record<string, number | boolean | string> | null;
   bestGateStreak: number;
+  bestCAR?: number;
   passed: boolean;
   iterations: AutoModeIterationSummary[];
+  // Plain-English explainer fields populated server-side by serializeAutoMode.
+  // Optional so older persisted records (loaded from disk) still parse.
+  gate?: {
+    color: "green" | "yellow" | "red" | "grey";
+    label: string;
+    headline: string;
+  };
+  failureReason?: {
+    code:
+      | "OK"
+      | "WEAK_GLOBAL_FIELD"
+      | "PARTICIPATION_COLLAPSED"
+      | "TEMPORAL_INSTABILITY"
+      | "GATE_OPENED_BUT_STREAK_SHORT"
+      | "LOCAL_PASS_GLOBAL_FAIL"
+      | "BUDGET_EXHAUSTED"
+      | "NOT_RUN_YET";
+    plain: string;
+  };
+  nextStep?: {
+    action:
+      | "PROCEED_TO_NEXT_PHASE"
+      | "EXTEND_TICKS"
+      | "INCREASE_GLOBAL_COUPLING"
+      | "INCREASE_TEMPERATURE"
+      | "REDUCE_NOISE"
+      | "MORE_SEEDS"
+      | "GIVE_UP_AND_REVISIT"
+      | "WAIT";
+    plain: string;
+  };
+}
+
+export interface PresetDisplay {
+  scaleLabel: string;
+  ticksLabel: string;
+  iterationsLabel: string;
+  expectedRuntime: string;
+}
+
+export interface Preset {
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;
+  difficulty: "quick" | "standard" | "deep" | "debug";
+  body: CreateAutoModeRequest & { scale: 81 | 810 | 81000 };
+  display: PresetDisplay;
+  recommended?: boolean;
 }
 
 export interface CreateAutoModeRequest {
@@ -776,6 +826,8 @@ export interface CreateAutoModeRequest {
 }
 
 export const autoModeApi = {
+  presets: () =>
+    jsonFetch<{ presets: Preset[] }>(`${API_PREFIX}/presets`),
   list: () =>
     jsonFetch<{ automodes: AutoModeDetail[] }>(`${API_PREFIX}/automode`),
   get: (id: string) => jsonFetch<AutoModeDetail>(`${API_PREFIX}/automode/${id}`),

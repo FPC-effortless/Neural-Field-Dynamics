@@ -11,9 +11,13 @@ import { BatchPanel } from "./components/BatchPanel";
 import { AutoModePanel } from "./components/AutoModePanel";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import { PhaseLockBanner } from "./components/PhaseLockBanner";
+import { LabHome } from "./components/LabHome";
 import {
   api,
+  autoModeApi,
+  subscribeAutoMode,
   subscribeRun,
+  type AutoModeDetail,
   type RunDetail,
   type RunSummary,
   type Stats,
@@ -64,11 +68,82 @@ function pushSeries(prev: Record<string, number[]>, stats: Stats): Record<string
 // Centralising the state here also makes Esc-to-close trivial.
 type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | null;
 
+type SurfaceMode = "LAB" | "ADVANCED";
+const SURFACE_KEY = "amisgc.surfaceMode";
+
+function readSurfaceMode(): SurfaceMode {
+  if (typeof window === "undefined") return "LAB";
+  const v = window.localStorage.getItem(SURFACE_KEY);
+  return v === "ADVANCED" ? "ADVANCED" : "LAB";
+}
+
 function AppShell() {
   const [viewMode, setViewMode] = useState<ViewMode>("STATE");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const closeModal = useCallback(() => setActiveModal(null), []);
+  const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>(readSurfaceMode);
+  // Auto-Mode run currently surfaced on the Lab Home scoreboard.
+  const [watchedAutoModeId, setWatchedAutoModeId] = useState<string | null>(
+    null,
+  );
+  const [watchedAutoMode, setWatchedAutoMode] =
+    useState<AutoModeDetail | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SURFACE_KEY, surfaceMode);
+  }, [surfaceMode]);
+
+  // On Lab-Home mount, if no run is being watched yet, latch onto the most
+  // recent Auto-Mode run so the scoreboard isn't empty after a page refresh
+  // mid-experiment.
+  useEffect(() => {
+    if (watchedAutoModeId) return;
+    if (surfaceMode !== "LAB") return;
+    let cancelled = false;
+    void autoModeApi
+      .list()
+      .then((res) => {
+        if (cancelled) return;
+        const sorted = [...res.automodes].sort(
+          (a, b) => b.createdAt - a.createdAt,
+        );
+        const latest = sorted[0];
+        if (latest) setWatchedAutoModeId(latest.id);
+      })
+      .catch(() => {
+        /* ignore — empty list is fine */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [surfaceMode, watchedAutoModeId]);
+
+  // SSE subscription for the watched Auto-Mode run. Keeps scoreboard live.
+  useEffect(() => {
+    if (!watchedAutoModeId) {
+      setWatchedAutoMode(null);
+      return;
+    }
+    const refetch = () => {
+      void autoModeApi.get(watchedAutoModeId).then((d) => setWatchedAutoMode(d));
+    };
+    refetch();
+    const unsubscribe = subscribeAutoMode(watchedAutoModeId, {
+      onSnapshot: (a) => setWatchedAutoMode(a),
+      onAutoModeStart: (a) => setWatchedAutoMode(a),
+      onIterationComplete: () => refetch(),
+      onAutoModeComplete: (a) => setWatchedAutoMode(a),
+    });
+    return unsubscribe;
+  }, [watchedAutoModeId]);
+
+  const handleCancelAutoMode = useCallback((id: string) => {
+    void autoModeApi.cancel(id).catch(() => {
+      /* server-side error already surfaced via SSE */
+    });
+  }, []);
 
   // Esc closes whatever modal / drawer is open. One handler beats four
   // independent useEffects per modal.
@@ -265,6 +340,14 @@ function AppShell() {
       />
 
       <main className="px-2 sm:px-3 lg:px-4 py-3 max-w-[1600px] mx-auto">
+        {surfaceMode === "LAB" ? (
+          <LabHome
+            watchedAutoMode={watchedAutoMode}
+            onStarted={(id) => setWatchedAutoModeId(id)}
+            onCancelWatched={handleCancelAutoMode}
+            onOpenAdvanced={() => setSurfaceMode("ADVANCED")}
+          />
+        ) : (
         <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
           <div className="grid gap-3 lg:grid-cols-12">
             {/* Left column: experiments + runs (hidden on mobile, drawer instead) */}
@@ -325,9 +408,27 @@ function AppShell() {
             {/* Right: live metrics */}
             <div className="lg:col-span-3 space-y-3">
               <MetricsPanel stats={stats} series={series} taskKey={taskKey} />
+              <button
+                type="button"
+                onClick={() => setSurfaceMode("LAB")}
+                style={{
+                  width: "100%",
+                  padding: "6px 10px",
+                  fontSize: 9,
+                  letterSpacing: 1.5,
+                  background: "transparent",
+                  border: "1px solid #0f4a3a",
+                  color: "#3aaf6a",
+                  borderRadius: 2,
+                  cursor: "pointer",
+                }}
+              >
+                ← BACK TO LAB HOME
+              </button>
             </div>
           </div>
         </div>
+        )}
       </main>
 
       <Footer />
