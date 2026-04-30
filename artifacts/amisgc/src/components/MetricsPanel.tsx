@@ -11,6 +11,75 @@ interface MetricsPanelProps {
   taskKey: string;
 }
 
+// §7.9 — Rule-based Recommendation Engine.
+// Maps the per-tick failure classifier string (from the sim's failureReason)
+// to a plain-English action suggestion shown directly under the gate panel.
+function getRecommendation(failureReason: string | undefined): {
+  action: string;
+  detail: string;
+  color: string;
+} | null {
+  if (!failureReason || failureReason === "Warming up") return null;
+  const r = failureReason.toLowerCase();
+  if (r.includes("low participation") || r.includes("participation")) {
+    return {
+      action: "Raise τ or β",
+      detail:
+        "Too few neurons are participating. Try a higher attention temperature (τ ≥ 1.5) or increase the entropy weight (β ≥ 0.3) so the field spreads across more neurons.",
+      color: "#ffb040",
+    };
+  }
+  if (r.includes("dominance collapse") || r.includes("dominance")) {
+    return {
+      action: "Lower τ or add inhibition",
+      detail:
+        "One neuron is monopolising attention (C_max > 0.5). Reduce temperature (τ) to flatten the softmax, or enable local inhibitory interneurons to suppress runaway dominance.",
+      color: "#ff9900",
+    };
+  }
+  if (r.includes("weak coupling") || r.includes("weak global")) {
+    return {
+      action: "Raise γ or inject G into soma",
+      detail:
+        "The global field has insufficient leverage. Increase global coupling strength (γ ≥ 2.0, try up to 5.0 or 10.0). As a structural upgrade, injecting G directly into the somatic update can break this plateau.",
+      color: "#ff4477",
+    };
+  }
+  if (r.includes("temporal instability") || r.includes("temporal")) {
+    return {
+      action: "Raise δ or lower σ",
+      detail:
+        "Integration is appearing in flashes but the network cannot hold a stable state. Increase temporal coherence (δ ≥ 0.4) and/or reduce exploration noise (σ ≤ 0.01) to stabilise transient integration.",
+      color: "#aa88ff",
+    };
+  }
+  if (r.includes("global field ineffective") || r.includes("ineffective")) {
+    return {
+      action: "Increase γ aggressively",
+      detail:
+        "The consensus signal |G| is too small to act on. Try γ ≥ 3.0, and consider computing Φ over a rolling 200-tick window rather than instantaneously to catch weak sustained integration.",
+      color: "#ff4477",
+    };
+  }
+  if (r.includes("noise dominance") || r.includes("noise")) {
+    return {
+      action: "Lower σ",
+      detail:
+        "Signal-to-noise ratio SNR < 1 — exploration noise is overwhelming the coherence signal. Reduce σ to 0.01 or below. If the problem persists, consider a power-normalised attention distribution instead of softmax.",
+      color: "#cc6600",
+    };
+  }
+  if (r.includes("subcritical")) {
+    return {
+      action: "Try the Expanded Sweep preset",
+      detail:
+        "The network shows some signal but none of the six failure modes is dominant, suggesting a structural limitation rather than a tuning problem. Run the Expanded Sweep (720 combos) to confirm, then consider the brain-realistic upgrade (hierarchical layers, small-world hubs, local inhibition).",
+      color: "#5a8aaa",
+    };
+  }
+  return null;
+}
+
 export const MetricsPanel = memo(function MetricsPanel({
   stats,
   series,
@@ -37,10 +106,32 @@ export const MetricsPanel = memo(function MetricsPanel({
   const gateStreak = stats?.gateStreak ?? 0;
   const reason = stats?.failureReason ?? "";
 
+  // §5.2 — Gate II: Structural Coherence (diagnostic only, never unlocks phases).
+  // Condition: S_C > 0.4 AND R > 0.5 AND PU > 0.08
+  const sc = stats?.networkSC ?? 0;
+  const pu = (stats as unknown as Record<string, number>)?.networkPU ?? 0;
+  const r = stats?.networkR ?? 0;
+  const gate2Pillars = [sc > 0.4, r > 0.5, pu > 0.08];
+  const gate2Open = gate2Pillars.every(Boolean);
+  const gate2Partial = !gate2Open && gate2Pillars.some(Boolean);
+  const gate2Color = gate2Open
+    ? "#44ffcc"
+    : gate2Partial
+      ? "#c2a040"
+      : "#334455";
+  const gate2Label = gate2Open
+    ? "GATE II OPEN"
+    : gate2Partial
+      ? "GATE II PARTIAL"
+      : "GATE II CLOSED";
+
+  // §7.9 — Recommendation Engine
+  const rec = getRecommendation(reason);
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2">
-      {/* Existence Gate */}
-      <Panel title="EXISTENCE GATE · Φ·PU·S_C" accent={gateColor}>
+      {/* §5.1 — Existence Gate (Gate I) */}
+      <Panel title="EXISTENCE GATE I · Φ·PU·S_C" accent={gateColor}>
         <div className="flex items-center justify-between mb-1">
           <span
             style={{
@@ -58,7 +149,7 @@ export const MetricsPanel = memo(function MetricsPanel({
           <Pill color={gateColor}>STREAK {gateStreak}</Pill>
         </div>
         <MR label="Φ > 0.05" value={fmt(stats?.networkPhi)} color={(stats?.networkPhi ?? 0) > 0.05 ? "#00ffc4" : "#ff4477"} />
-        <MR label="PU > 0.10" value={fmt(stats?.networkPU)} color={(stats?.networkPU ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
+        <MR label="PU > 0.10" value={fmt(pu)} color={pu > 0.10 ? "#00ffc4" : "#ff4477"} />
         <MR label="S_C > 0.10" value={fmt(stats?.networkSC)} color={(stats?.networkSC ?? 0) > 0.10 ? "#00ffc4" : "#ff4477"} />
         <MR label="H_C" value={fmt(stats?.networkH_C)} color="#aa88ff" />
         <MR label="CAR" value={fmt(stats?.networkCAR)} color="#44ffcc" />
@@ -78,6 +169,89 @@ export const MetricsPanel = memo(function MetricsPanel({
             ✗ {reason}
           </div>
         ) : null}
+
+        {/* §7.9 — Inline Recommendation Engine */}
+        {rec && !gateOpen && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: "6px 8px",
+              background: "rgba(0,0,0,0.25)",
+              border: `1px solid ${rec.color}`,
+              borderRadius: 2,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 7,
+                color: rec.color,
+                letterSpacing: 1.5,
+                fontWeight: 700,
+                marginBottom: 3,
+              }}
+            >
+              ⟶ RECOMMENDATION · {rec.action}
+            </div>
+            <div style={{ fontSize: 9, color: "#9aaaa6", lineHeight: 1.45 }}>
+              {rec.detail}
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      {/* §5.2 — Gate II: Structural Coherence (diagnostic only) */}
+      <Panel title="GATE II · STRUCTURAL COHERENCE" accent={gate2Color}>
+        <div className="flex items-center justify-between mb-1">
+          <span
+            style={{
+              fontSize: 11,
+              color: gate2Color,
+              letterSpacing: 1.5,
+              fontWeight: 700,
+            }}
+          >
+            {gate2Label}
+          </span>
+          <span
+            style={{
+              fontSize: 7,
+              color: "#5a7a70",
+              letterSpacing: 1,
+              fontStyle: "italic",
+            }}
+          >
+            DIAGNOSTIC ONLY
+          </span>
+        </div>
+        <MR
+          label="S_C > 0.40"
+          value={fmt(sc)}
+          color={sc > 0.4 ? "#44ffcc" : "#556560"}
+        />
+        <MR
+          label="R > 0.50"
+          value={fmt(r)}
+          color={r > 0.5 ? "#44ffcc" : "#556560"}
+        />
+        <MR
+          label="PU > 0.08"
+          value={fmt(pu)}
+          color={pu > 0.08 ? "#44ffcc" : "#556560"}
+        />
+        {gate2Open && (
+          <div
+            style={{
+              fontSize: 8,
+              color: "#44ffcc",
+              marginTop: 5,
+              padding: "2px 5px",
+              border: "1px solid #44ffcc",
+              background: "rgba(68,255,204,0.06)",
+            }}
+          >
+            Non-integrated distributed cognition confirmed. Gate I still required for phase unlock.
+          </div>
+        )}
       </Panel>
 
       {/* Phase Region */}

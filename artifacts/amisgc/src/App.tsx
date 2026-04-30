@@ -598,7 +598,7 @@ function Header({
             }}
             className="sm:!inline"
           >
-            v12.0 · SOFT FIELD
+            v13.0 · BRAIN-REALISTIC
           </span>
           <Pill color={phaseColor}>{phaseLabel}</Pill>
         </div>

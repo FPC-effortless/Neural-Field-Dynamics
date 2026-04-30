@@ -1,17 +1,12 @@
 import { useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { autoModeApi, type AutoModeDetail, type Preset } from "../lib/api";
+import { autoModeApi, api, type AutoModeDetail, type Preset } from "../lib/api";
 import { Panel } from "./Panel";
 import { StatusScoreboard } from "./StatusScoreboard";
 
 interface LabHomeProps {
-  // Called after a preset successfully starts an Auto-Mode run, so the
-  // parent can switch into "watching" mode if it wants to.
   onStarted?: (id: string) => void;
-  // Called when the user clicks "Open advanced dashboard". Lets the parent
-  // toggle to the existing power-user UI.
   onOpenAdvanced?: () => void;
-  // The currently-watched Auto-Mode run, if any. Drives the scoreboard.
   watchedAutoMode: AutoModeDetail | null;
   onCancelWatched?: (id: string) => void;
 }
@@ -40,6 +35,17 @@ export function LabHome({
     staleTime: 60_000,
   });
 
+  const phaseStatusQuery = useQuery({
+    queryKey: ["phase-status"],
+    queryFn: () => api.phaseStatus(),
+    refetchInterval: 10_000,
+  });
+
+  const gateOpen =
+    phaseStatusQuery.data?.gateOpened ||
+    phaseStatusQuery.data?.manualOverride ||
+    false;
+
   const startMutation = useMutation({
     mutationFn: (preset: Preset) => autoModeApi.create(preset.body),
     onSuccess: (data) => {
@@ -64,6 +70,7 @@ export function LabHome({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* §1.3 Platform Philosophy — self-operating laboratory intro */}
       <Panel accent="#0f4a3a">
         <div
           style={{
@@ -83,20 +90,82 @@ export function LabHome({
                 marginBottom: 6,
               }}
             >
-              AMISGC LAB · ONE-CLICK EXPERIMENTS
+              AMISGC · EMERGENT INTELLIGENCE RESEARCH PLATFORM
             </div>
             <div
               style={{
                 fontSize: 13,
                 color: "#c5dfd4",
-                lineHeight: 1.5,
+                lineHeight: 1.6,
                 maxWidth: 720,
+                marginBottom: 10,
               }}
             >
-              Pick a preset below to run an experiment end-to-end. Each preset
-              uses Auto-Mode to refine parameters automatically and report
-              results in plain English. No knobs needed — the lab will tell
-              you what happened and what to do next.
+              A self-operating laboratory for the spontaneous emergence of
+              cognition. We do not program the network to be intelligent — each
+              neuron follows only local rules. Intelligence emerges, or it
+              doesn&apos;t.
+            </div>
+            {/* §1.3 — 4-step flow */}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              {[
+                { step: "1", label: "Choose a preset" },
+                { step: "2", label: "Click Start" },
+                { step: "3", label: "Watch the live dashboard" },
+                { step: "4", label: "Read the plain-English report" },
+              ].map(({ step, label }) => (
+                <div
+                  key={step}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    background: "rgba(0,0,0,0.3)",
+                    border: "1px solid #0a2828",
+                    borderRadius: 2,
+                    padding: "4px 8px",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: "50%",
+                      background: "#0f4a3a",
+                      border: "1px solid #3aaf6a",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 8,
+                      color: "#3aaf6a",
+                      fontWeight: 700,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {step}
+                  </span>
+                  <span style={{ fontSize: 9, color: "#7a9a90" }}>{label}</span>
+                </div>
+              ))}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 8,
+                color: "#5a7a70",
+                lineHeight: 1.5,
+              }}
+            >
+              No manual coding, parameter entry, or metric computation required.
+              The lab automates experiment scheduling, execution, evaluation,
+              and reporting while enforcing scientific rigour through hard gates
+              and ablation validations.
             </div>
           </div>
           {onOpenAdvanced && (
@@ -126,6 +195,7 @@ export function LabHome({
         onCancel={onCancelWatched}
       />
 
+      {/* §7.11 — Preset system */}
       <div
         style={{
           display: "grid",
@@ -152,6 +222,7 @@ export function LabHome({
             key={preset.id}
             preset={preset}
             disabled={isAnyRunning || startMutation.isPending}
+            gateOpen={gateOpen}
             onStart={handleStart}
             isStarting={
               startMutation.isPending &&
@@ -177,6 +248,7 @@ interface PresetCardProps {
   preset: Preset;
   disabled: boolean;
   isStarting: boolean;
+  gateOpen: boolean;
   onStart: (preset: Preset) => void;
 }
 
@@ -184,10 +256,19 @@ function PresetCard({
   preset,
   disabled,
   isStarting,
+  gateOpen,
   onStart,
 }: PresetCardProps) {
   const badge = DIFFICULTY_BADGE[preset.difficulty];
-  const accent = preset.recommended ? "#3aaf6a" : "#0f4a3a";
+  const requiresGateOpen = preset.requiresGateOpen;
+  const gateBlocked = requiresGateOpen && !gateOpen;
+  const accent = gateBlocked
+    ? "#334455"
+    : preset.recommended
+      ? "#3aaf6a"
+      : "#0f4a3a";
+  const isDisabled = disabled || gateBlocked;
+
   return (
     <Panel accent={accent}>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -202,7 +283,7 @@ function PresetCard({
           <div
             style={{
               fontSize: 12,
-              color: "#c5dfd4",
+              color: gateBlocked ? "#5a7a70" : "#c5dfd4",
               fontWeight: 600,
               letterSpacing: 0.5,
             }}
@@ -213,8 +294,8 @@ function PresetCard({
             style={{
               fontSize: 7,
               padding: "2px 6px",
-              border: `1px solid ${badge.color}`,
-              color: badge.color,
+              border: `1px solid ${gateBlocked ? "#334455" : badge.color}`,
+              color: gateBlocked ? "#334455" : badge.color,
               letterSpacing: 1.5,
               borderRadius: 2,
             }}
@@ -222,30 +303,35 @@ function PresetCard({
             {badge.label}
           </span>
         </div>
-        {preset.recommended && (
-          <div
-            style={{
-              fontSize: 7,
-              color: "#3aaf6a",
-              letterSpacing: 1.5,
-            }}
-          >
+
+        {preset.recommended && !gateBlocked && (
+          <div style={{ fontSize: 7, color: "#3aaf6a", letterSpacing: 1.5 }}>
             ★ RECOMMENDED FIRST RUN
           </div>
         )}
-        <div
-          style={{
-            fontSize: 10,
-            color: "#9aaaa6",
-            fontStyle: "italic",
-          }}
-        >
+        {gateBlocked && (
+          <div
+            style={{
+              fontSize: 7,
+              color: "#556560",
+              letterSpacing: 1.5,
+              padding: "2px 5px",
+              border: "1px solid #334455",
+              background: "rgba(0,0,0,0.2)",
+              borderRadius: 2,
+            }}
+          >
+            🔒 REQUIRES EXISTENCE GATE (GATE I) TO BE OPEN
+          </div>
+        )}
+
+        <div style={{ fontSize: 10, color: "#9aaaa6", fontStyle: "italic" }}>
           {preset.tagline}
         </div>
         <div
           style={{
             fontSize: 10,
-            color: "#7a9a90",
+            color: gateBlocked ? "#4a6a60" : "#7a9a90",
             lineHeight: 1.4,
             minHeight: 56,
           }}
@@ -266,32 +352,38 @@ function PresetCard({
           <div>{preset.display.scaleLabel}</div>
           <div>{preset.display.ticksLabel}</div>
           <div>{preset.display.iterationsLabel}</div>
-          <div style={{ color: "#c2a040", marginTop: 2 }}>
+          <div style={{ color: gateBlocked ? "#5a7a70" : "#c2a040", marginTop: 2 }}>
             {preset.display.expectedRuntime}
           </div>
         </div>
         <button
           type="button"
-          disabled={disabled}
-          onClick={() => onStart(preset)}
+          disabled={isDisabled}
+          onClick={() => !isDisabled && onStart(preset)}
           style={{
             marginTop: 4,
             padding: "8px 12px",
             fontSize: 10,
             letterSpacing: 2,
-            background: disabled
-              ? "rgba(15,74,58,0.15)"
+            background: isDisabled
+              ? "rgba(15,74,58,0.10)"
               : preset.recommended
                 ? "rgba(20,80,40,0.45)"
                 : "rgba(15,74,58,0.35)",
-            border: `1px solid ${disabled ? "#1a3a30" : accent}`,
-            color: disabled ? "#5a7a70" : "#9bf0c0",
+            border: `1px solid ${isDisabled ? "#1a3a30" : accent}`,
+            color: isDisabled ? "#3a5a50" : "#9bf0c0",
             borderRadius: 2,
-            cursor: disabled ? "not-allowed" : "pointer",
+            cursor: isDisabled ? "not-allowed" : "pointer",
             fontWeight: 600,
           }}
         >
-          {isStarting ? "STARTING…" : disabled ? "BUSY" : "▶ START EXPERIMENT"}
+          {isStarting
+            ? "STARTING…"
+            : gateBlocked
+              ? "🔒 LOCKED"
+              : disabled
+                ? "BUSY"
+                : "▶ START EXPERIMENT"}
         </button>
       </div>
     </Panel>

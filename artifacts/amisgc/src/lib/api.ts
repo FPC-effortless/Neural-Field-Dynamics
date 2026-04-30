@@ -887,6 +887,9 @@ export interface Preset {
   body: CreateAutoModeRequest & { scale: 81 | 810 | 81000 };
   display: PresetDisplay;
   recommended?: boolean;
+  // True when this preset requires Gate I (Existence Gate) to be open.
+  // The lab home greys out and locks the card while the gate is closed.
+  requiresGateOpen?: boolean;
 }
 
 export interface CreateAutoModeRequest {

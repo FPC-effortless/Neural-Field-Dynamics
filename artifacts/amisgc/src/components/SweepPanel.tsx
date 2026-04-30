@@ -20,10 +20,12 @@ function paramSummary(p: Record<string, number | boolean | string>): string {
     .join(" ");
 }
 
-// Phase-0 default grid (v13 final spec) — must match the server-side default
-// in routes/runs.ts (PHASE0_DEFAULT_RANGES). Grid expanded to "force strong
-// global coupling": τ extended to {2.0, 3.0}, β extended to 0.8, δ kept at
-// the original [0.2, 0.4, 0.6]. 5 × 4 × 4 × 3 × 3 = 720 combinations.
+// Phase-0 default grid (spec §6.1 "forced-coupling regime").
+// Current axes: τ × γ × β × δ × σ  = 5×4×4×3×3 = 720 combinations.
+// Full spec grid also includes p_inhib (inhibitory fraction) and replay_speed
+// (offline replay compression) for 6×5×4×3×3×2×3 = 6 480 combos — those two
+// axes require the brain-realistic upgrade (hierarchical layers + replay) and
+// will be added once the structural enhancements are active.
 const PHASE0_GRID = {
   TAU_ATT: [0.7, 1.0, 1.5, 2.0, 3.0],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
@@ -172,14 +174,15 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         {!sweep ? (
           <Panel title={`AUTO SWEEP · ${PHASE0_TOTAL}-COMBO PHASE 0 GRID`} accent="#00ffc4">
             <div style={{ fontSize: 9, color: "#0d7060", marginBottom: 10, lineHeight: 1.6 }}>
-              One-click launch of the full Phase 0 hunt for the Existence Gate
-              (Φ&gt;0.05 ∧ PU&gt;0.1 ∧ S_C&gt;0.1 sustained ≥1000 ticks).<br />
-              τ_att ∈ {"{0.7, 1.0, 1.5, 2.0, 3.0}"} · γ_global ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
-              β_entropy ∈ {"{0.1, 0.3, 0.5, 0.8}"} · δ_temporal ∈ {"{0.2, 0.4, 0.6}"} ·
-              σ_noise ∈ {"{0.01, 0.02, 0.05}"} = <b>{PHASE0_TOTAL} combos</b>.
+              Phase 0 Existence-Gate hunt — spec §6.1 forced-coupling regime.
+              Gate I requires Φ &gt; 0.05 ∧ PU &gt; 0.1 ∧ S_C &gt; 0.1 sustained ≥ 1 000 consecutive ticks.
               <br />
-              Combos are live-sorted by CAR (Φ / (1 − H_C/H_max)) so the
-              coherence-amplifying leaders surface first.
+              Current grid axes: τ ∈ {"{0.7, 1.0, 1.5, 2.0, 3.0}"} · γ ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
+              β ∈ {"{0.1, 0.3, 0.5, 0.8}"} · δ ∈ {"{0.2, 0.4, 0.6}"} · σ ∈ {"{0.01, 0.02, 0.05}"}
+              = <b>{PHASE0_TOTAL} combos</b>.{" "}
+              Full spec grid (6 480 combos) adds p_inhib and replay_speed — pending brain-realistic upgrade.
+              <br />
+              Combos are live-sorted by CAR (Φ / (1 − H_C/H_max)) so coherence-amplifying leaders surface first.
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
