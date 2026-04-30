@@ -48,6 +48,12 @@ export interface ArcOptions {
   signal?: { cancelled: boolean };
 }
 
+// Wall-clock yield interval (mirrors runner.ts). Without this the ARC inner
+// training loop blocks the event loop for the full trainTicksPerTask × tickCost
+// duration, and DELETE /api/runs/:id can't take effect until the active task
+// finishes.
+const YIELD_INTERVAL_MS = 30;
+
 export async function runArcBenchmark(
   opts: ArcOptions = {}
 ): Promise<ArcResult> {
@@ -70,6 +76,13 @@ export async function runArcBenchmark(
 
   const samples: ArcSample[] = [];
   let correct = 0;
+  let lastYieldAt = Date.now();
+  const maybeYield = async (): Promise<boolean> => {
+    if (Date.now() - lastYieldAt < YIELD_INTERVAL_MS) return true;
+    await new Promise((r) => setImmediate(r));
+    lastYieldAt = Date.now();
+    return !signal?.cancelled;
+  };
 
   for (let i = 0; i < numTasks; i++) {
     if (signal?.cancelled) break;
@@ -87,7 +100,9 @@ export async function runArcBenchmark(
     for (let s = 0; s < trainTicksPerTask; s++) {
       if (signal?.cancelled) break;
       simTick(sim, ctx);
+      if (!(await maybeYield())) break;
     }
+    if (signal?.cancelled) break;
 
     // Test
     let perTaskCorrect = 0;
@@ -111,7 +126,9 @@ export async function runArcBenchmark(
           const n = sim.ns[id];
           if (n && n.lastFire === sim.t) (probeFires[bIdx] as number)++;
         }
+        if (!(await maybeYield())) break;
       }
+      if (signal?.cancelled) break;
       // Threshold: bit ON if input neuron fired at >25% of probe ticks
       const predicted = probeFires.map((f) =>
         f > probeTicks * 0.25 ? 1 : 0

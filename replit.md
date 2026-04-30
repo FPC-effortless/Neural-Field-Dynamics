@@ -108,6 +108,14 @@ UI surfaces:
 
 The clamp range (`9 – 102 400`) is enforced both in the core (`paramsForNeurons`) and in the API server (`clampNeurons`), so any client supplying out-of-range values gets sane defaults instead of an error.
 
+### Cancellation latency (April 2026)
+
+Earlier, the simulator only yielded to the event loop every `sampleEvery × 4` ticks (default 800), and only inside the sample-emit block. With heavy grids (`scale=81 000`, N≈81k) a single `simTick` is non-trivial, so the loop could block the Node.js event loop for many seconds — during which `DELETE /api/runs/:id`, `/api/sweeps/:id`, `/api/batches/:id`, and `/api/automode/:id` couldn't even be processed and SSE streams froze. Cancellation appeared "stuck" until the next yield. The ARC benchmark was worse: its training and probe inner loops had **no `await` at all**, so cancel could not propagate until the active task finished.
+
+The runner (`lib/amisgc-core/src/runner.ts`) and ARC harness (`lib/amisgc-core/src/arc.ts`) now yield on a **wall-clock interval** (`YIELD_INTERVAL_MS = 30 ms`), decoupled from sample/probe timing. Cancellation latency is bounded by `30 ms + the cost of the in-flight simTick`. End-to-end smoke tests (POST → 200 ms wait → DELETE → poll for status="cancelled") complete in ~200 ms for runs, sweeps, and ARC alike.
+
+The DELETE handlers for sweeps, batches, and auto-mode also **eagerly flip status and broadcast a `*_cancelled` SSE event** (`sweep_cancelled`, `batch_cancelled`, `automode_cancelled`) so subscribed dashboards reflect the user's click immediately, instead of waiting for the orchestrator's `for` loop to unwind on the next yield.
+
 ### Top-K override everywhere (v13)
 
 Mirroring neuron-count, every entry point now also accepts an optional `topK` integer (absolute count of "conscious" neurons selected per tick under `ATTN_MODE = "topk"` ablations). Server-side `applyTopKOverride` clamps to `[1, 102 400]`, then converts to `TOPK_FRACTION = topK / Neff` (where `Neff` is the post-override neuron count) and writes it into `customParams`, so it wins over any `TOPK_FRACTION` the caller supplied. Endpoints: `POST /api/runs`, `POST /api/sweeps`, `POST /api/batches`, `POST /api/batches/:id/rerun`, `POST /api/automode`. Persisted on `RunRecord.topK`, `SweepRecord.topK`, `BatchRecord.topK`. UI surfaces: `TOP_K` input in the experiment picker, `TOP_K (override)` in the sweep launcher, batch panel (4-column override grid), and Auto Mode launcher.

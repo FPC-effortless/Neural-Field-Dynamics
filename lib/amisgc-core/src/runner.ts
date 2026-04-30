@@ -88,6 +88,12 @@ const SAMPLE_DEFAULT = 200;
 const ATTRACTOR_DEFAULT = 5000;
 // Cap on how many points we keep in the metric series (memory + payload size).
 const METRIC_SERIES_CAP = 400;
+// How often (wall-clock ms) the run loop yields to the event loop. This is the
+// upper bound on cancellation latency: a DELETE /api/runs/:id (or its sweep /
+// batch parent) can take at most this long to be observed by the loop, plus
+// the cost of the simTick currently in flight. 30ms keeps the dashboard feeling
+// responsive while still giving the simulator plenty of CPU between yields.
+const YIELD_INTERVAL_MS = 30;
 
 export function startRun(opts: RunOptions = {}): RunHandle {
   const signal = opts.signal ?? { cancelled: false };
@@ -139,6 +145,7 @@ export function startRun(opts: RunOptions = {}): RunHandle {
     // Cycle through tasks naturally; advanceTask runs internally based on TASK_TICKS
     setTask(sim, "COPY");
 
+    let lastYieldAt = Date.now();
     try {
       for (let i = 0; i < ticks; i++) {
         if (signal.cancelled) break;
@@ -158,16 +165,23 @@ export function startRun(opts: RunOptions = {}): RunHandle {
             }
           }
           sampleCounter++;
-          // Yield to event loop so SSE clients can keep up
-          if (sim.t % (sampleEvery * 4) === 0) {
-            await new Promise((r) => setImmediate(r));
-          }
         }
 
         if (sim.t % attractorEvery === 0 && sim.t > 0) {
           captureAttractor(sim, ctx);
         }
         // (Task rotation is fully handled inside simTick via advanceTask.)
+
+        // Wall-clock-based yield to the event loop. Decoupled from sample
+        // timing so heavy grids (large N) — where a single simTick can take
+        // many ms — still flush SSE events and pick up DELETE /cancel
+        // requests within ~YIELD_INTERVAL_MS. Date.now() is ~20ns; cheap
+        // compared to even the smallest simTick.
+        if (Date.now() - lastYieldAt >= YIELD_INTERVAL_MS) {
+          await new Promise((r) => setImmediate(r));
+          if (signal.cancelled) break;
+          lastYieldAt = Date.now();
+        }
       }
     } catch (err) {
       opts.onError?.(err as Error);

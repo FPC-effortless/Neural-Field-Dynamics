@@ -921,6 +921,14 @@ router.delete("/sweeps/:id", (req, res) => {
     const r = runs.get(cur.runId);
     if (r) r.cancel();
   }
+  // Eagerly flip status + broadcast so SSE-subscribed UIs reflect the cancel
+  // within milliseconds, instead of waiting for the runner's next yield to
+  // unwind the orchestrator loop. The orchestrator will set the final status
+  // when its `for` loop exits, but in the interim "cancelled" is correct.
+  if (s.status === "running" || s.status === "pending") {
+    s.status = "cancelled";
+    broadcastSweep(s, "sweep_cancelled", serializeSweep(s));
+  }
   res.json({ id: s.id, status: "cancelled" });
 });
 
@@ -1465,6 +1473,13 @@ router.delete("/batches/:id", (req, res) => {
   }
   b.cancelled = true;
   b.cancelChild();
+  // Eagerly flip status + broadcast so SSE-subscribed UIs reflect the cancel
+  // within milliseconds. The orchestrator will set the final status as its
+  // `for` loop unwinds, but the user-visible state should not lag the click.
+  if (b.status === "running" || b.status === "pending") {
+    b.status = "cancelled";
+    broadcastBatch(b, "batch_cancelled", serializeBatch(b));
+  }
   res.json({ id: b.id, status: "cancelled" });
 });
 
@@ -2377,7 +2392,17 @@ router.delete("/automode/:id", (req, res) => {
         const child = runs.get(combo.runId);
         if (child) child.cancel();
       }
+      // Eagerly flip the inner sweep's status too so anyone watching the
+      // sweep stream (not just the auto-mode stream) sees it cancel.
+      if (sw.status === "running" || sw.status === "pending") {
+        sw.status = "cancelled";
+        broadcastSweep(sw, "sweep_cancelled", serializeSweep(sw));
+      }
     }
+  }
+  if (a.status === "running" || a.status === "pending") {
+    a.status = "cancelled";
+    broadcastAutoMode(a, "automode_cancelled", serializeAutoMode(a));
   }
   res.json({ id: a.id, status: "cancelled" });
 });
