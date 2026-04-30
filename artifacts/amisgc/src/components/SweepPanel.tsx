@@ -26,20 +26,22 @@ function paramSummary(p: Record<string, number | boolean | string>): string {
     .join(" ");
 }
 
-// Phase 0 default grid (v13 spec) — must match the server-side default in
-// routes/runs.ts (PHASE0_DEFAULT_RANGES). β and δ are SWAPPED versus v12.
-// 3 × 4 × 3 × 3 × 3 = 324 combinations.
+// Phase-0 default grid (v13 final spec) — must match the server-side default
+// in routes/runs.ts (PHASE0_DEFAULT_RANGES). Grid expanded to "force strong
+// global coupling": τ extended to {2.0, 3.0}, β extended to 0.8, δ kept at
+// the original [0.2, 0.4, 0.6]. 5 × 4 × 4 × 3 × 3 = 720 combinations.
 const PHASE0_GRID = {
-  TAU_ATT: [0.7, 1.0, 1.5],
+  TAU_ATT: [0.7, 1.0, 1.5, 2.0, 3.0],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
-  BETA_ENTROPY: [0.2, 0.4, 0.6],
-  DELTA_TEMPORAL: [0.1, 0.3, 0.5],
+  BETA_ENTROPY: [0.1, 0.3, 0.5, 0.8],
+  DELTA_TEMPORAL: [0.2, 0.4, 0.6],
   NOISE_SIGMA: [0.01, 0.02, 0.05],
 };
 const PHASE0_TOTAL = Object.values(PHASE0_GRID).reduce((a, b) => a * b.length, 1);
-// v13 default sample length per combo (50 000 ticks). Server enforces the
-// same value when the request omits ticksPerCombo.
-const PHASE0_DEFAULT_TICKS = 50000;
+// v13 spec: default 30 000 ticks per combo; researcher can manually bump to
+// 50 000 if a borderline combo shows a clear upward Φ trend in its final 5k.
+const PHASE0_DEFAULT_TICKS = 30000;
+const PHASE0_MAX_TICKS = 50000;
 
 type SortMode = "CAR" | "STREAK" | "INDEX";
 
@@ -170,12 +172,12 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         </div>
 
         {!sweep ? (
-          <Panel title="AUTO SWEEP · 324-COMBO PHASE 0 GRID" accent="#00ffc4">
+          <Panel title={`AUTO SWEEP · ${PHASE0_TOTAL}-COMBO PHASE 0 GRID`} accent="#00ffc4">
             <div style={{ fontSize: 9, color: "#0d7060", marginBottom: 10, lineHeight: 1.6 }}>
               One-click launch of the full Phase 0 hunt for the Existence Gate
               (Φ&gt;0.05 ∧ PU&gt;0.1 ∧ S_C&gt;0.1 sustained ≥1000 ticks).<br />
-              τ_att ∈ {"{0.7, 1.0, 1.5}"} · γ_global ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
-              δ_temporal ∈ {"{0.2, 0.4, 0.6}"} · β_entropy ∈ {"{0.1, 0.3, 0.5}"} ·
+              τ_att ∈ {"{0.7, 1.0, 1.5, 2.0, 3.0}"} · γ_global ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
+              β_entropy ∈ {"{0.1, 0.3, 0.5, 0.8}"} · δ_temporal ∈ {"{0.2, 0.4, 0.6}"} ·
               σ_noise ∈ {"{0.01, 0.02, 0.05}"} = <b>{PHASE0_TOTAL} combos</b>.
               <br />
               Combos are live-sorted by CAR (Φ / (1 − H_C/H_max)) so the

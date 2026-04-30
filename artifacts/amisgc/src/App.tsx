@@ -10,6 +10,7 @@ import { SweepPanel } from "./components/SweepPanel";
 import { BatchPanel } from "./components/BatchPanel";
 import { AutoModePanel } from "./components/AutoModePanel";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
+import { PhaseLockBanner } from "./components/PhaseLockBanner";
 import {
   api,
   subscribeRun,
@@ -220,6 +221,7 @@ function AppShell() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#020c16", color: "#c5dfd4" }}>
+      <PhaseLockBanner />
       <Header
         viewMode={viewMode}
         onViewModeChange={setViewMode}

@@ -19,6 +19,14 @@ import {
 import { runArcBenchmark, type ArcResult, type ArcSample } from "@workspace/amisgc-core";
 import { notesStore } from "../lib/notesStore.js";
 import { baselinesStore } from "../lib/baselinesStore.js";
+import {
+  isExperimentLocked,
+  maybeMarkGateOpened,
+  getPhaseStatus,
+  setManualOverride,
+  resetPhaseStatus,
+  PHASE_LOCK_GATE_STREAK_REQUIRED,
+} from "../lib/phaseLockStore.js";
 
 interface RunRecord {
   id: string;
@@ -133,6 +141,8 @@ function pruneRuns(): void {
 const router: IRouter = Router();
 
 router.get("/experiments", (_req, res) => {
+  const status = getPhaseStatus();
+  const unlocked = status.gateOpened || status.manualOverride;
   res.json({
     experiments: ALL_EXPERIMENTS.map((e) => ({
       id: e.id,
@@ -144,12 +154,45 @@ router.get("/experiments", (_req, res) => {
       metric: e.metric,
       targetVal: e.targetVal,
       targetDir: e.targetDir,
+      // v13 — let the UI grey-out locked phases without making a second call.
+      locked: !unlocked && e.phase !== "PH0",
     })),
     groups: PHASE_GROUPS.map((g) => ({
       phase: g.phase,
       label: g.label,
       experimentIds: g.experiments.map((e) => e.id),
+      locked: !unlocked && g.phase !== "PH0",
     })),
+    phaseStatus: status,
+  });
+});
+
+// v13 spec §3.2 — phase-lock state. The Existence Gate must be held for at
+// least PHASE_LOCK_GATE_STREAK_REQUIRED consecutive ticks in a Phase-0 run
+// before any higher-phase experiment / batch is allowed to start.
+router.get("/phase-status", (_req, res) => {
+  res.json({
+    ...getPhaseStatus(),
+    gateStreakRequired: PHASE_LOCK_GATE_STREAK_REQUIRED,
+  });
+});
+
+// Manual override — for researcher debugging only. Does NOT count as the
+// gate having been opened; just bypasses the lock check.
+router.post("/phase-status/override", (req, res) => {
+  const enabled = !!(req.body && (req.body as { enabled?: unknown }).enabled);
+  res.json({
+    ...setManualOverride(enabled),
+    gateStreakRequired: PHASE_LOCK_GATE_STREAK_REQUIRED,
+  });
+});
+
+// Reset the lock back to its initial (locked) state. Useful when starting a
+// brand-new study or re-validating that the protocol works end-to-end.
+router.post("/phase-status/reset", (_req, res) => {
+  res.json({
+    ...resetPhaseStatus(),
+    gateStreakRequired: PHASE_LOCK_GATE_STREAK_REQUIRED,
   });
 });
 
@@ -170,6 +213,22 @@ router.post("/runs", (req, res) => {
   const neurons = clampNeurons(body.neurons);
   const topK = clampTopK(body.topK);
   const isArc = body.type === "arc";
+
+  // v13 spec §3.2 — block runs of higher-phase experiments until the
+  // Existence Gate has been opened in a Phase-0 run. ARC harness runs and
+  // ad-hoc / Phase-0 / null-experiment runs are always allowed.
+  if (!isArc && body.experimentId && isExperimentLocked(body.experimentId)) {
+    const status = getPhaseStatus();
+    res.status(423).json({
+      error: "phase_locked",
+      message:
+        `Experiment ${body.experimentId} is in a higher phase that is locked ` +
+        `until the Existence Gate has been held for ` +
+        `≥ ${PHASE_LOCK_GATE_STREAK_REQUIRED} ticks in a Phase-0 run.`,
+      phaseStatus: status,
+    });
+    return;
+  }
 
   const exp = body.experimentId ? findExperiment(body.experimentId) : undefined;
   const requestedTicks = body.ticks ?? exp?.ticks ?? 5000;
@@ -297,6 +356,14 @@ router.post("/runs", (req, res) => {
       if (e.target !== undefined) record.target = e.target;
       record.completedAt = Date.now();
       record.status = record.status === "cancelled" ? "cancelled" : "completed";
+      // v13 spec §3.2 — if this run held the gate long enough, unlock all
+      // higher phases for subsequent runs/batches/sweeps.
+      const finalStreak = record.latestStats?.gateStreak ?? 0;
+      maybeMarkGateOpened({
+        runId: record.id,
+        experimentId: record.experimentId,
+        gateStreak: finalStreak,
+      });
       broadcast(record, "complete", e);
       for (const sub of record.subscribers) {
         try {
@@ -676,6 +743,14 @@ async function runSweepCombo(
         combo.status = "completed";
         const cur = s.combos[s.bestIndex];
         if (!cur || isBetterCombo(combo, cur)) s.bestIndex = combo.index;
+        // v13 spec §3.2 — Phase-0 sweeps are the path that opens the gate.
+        // Promote the unlock as soon as any combo qualifies.
+        const finalStreak = record.latestStats?.gateStreak ?? combo.gateStreak;
+        maybeMarkGateOpened({
+          runId: record.id,
+          experimentId: record.experimentId,
+          gateStreak: finalStreak,
+        });
         persistSweep(s);
         broadcastSweep(s, "combo_complete", { sweepId: s.id, combo, bestIndex: s.bestIndex });
         resolve();
@@ -695,22 +770,29 @@ async function runSweepCombo(
   });
 }
 
-// Default sweep grid for Phase 0 (v13 spec).
-//   τ ∈ {0.7, 1.0, 1.5} · γ ∈ {1.0, 1.5, 2.0, 3.0}
-//   β ∈ {0.2, 0.4, 0.6} · δ ∈ {0.1, 0.3, 0.5} · σ ∈ {0.01, 0.02, 0.05}
-// = 3 × 4 × 3 × 3 × 3 = 324 combos. β and δ are SWAPPED versus v12 — v13
-// pushes more entropy in and lets temporal coherence stay narrower.
+// v13 final Phase-0 grid (spec §5.1) — designed to force strong global
+// coupling. 5 × 4 × 4 × 3 × 3 = 720 combinations.
+//   τ ∈ {0.7, 1.0, 1.5, 2.0, 3.0}   attention sharpness
+//   γ ∈ {1.0, 1.5, 2.0, 3.0}        global coupling strength
+//   β ∈ {0.1, 0.3, 0.5, 0.8}        broad-participation reward
+//   δ ∈ {0.2, 0.4, 0.6}             temporal coherence
+//   σ ∈ {0.01, 0.02, 0.05}          noise level
 const PHASE0_DEFAULT_RANGES: Record<string, number[]> = {
-  TAU_ATT: [0.7, 1.0, 1.5],
+  TAU_ATT: [0.7, 1.0, 1.5, 2.0, 3.0],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
-  BETA_ENTROPY: [0.2, 0.4, 0.6],
-  DELTA_TEMPORAL: [0.1, 0.3, 0.5],
+  BETA_ENTROPY: [0.1, 0.3, 0.5, 0.8],
+  DELTA_TEMPORAL: [0.2, 0.4, 0.6],
   NOISE_SIGMA: [0.01, 0.02, 0.05],
 };
-// v13 spec: combos sample for 50 000 ticks (up from 20 000) so the
-// existence-gate streak threshold of ≥1000 ticks has 50× headroom to settle.
-const PHASE0_DEFAULT_TICKS = 50000;
+// v13 spec: each combo runs for 30 000 ticks by default; runs are auto-
+// extended to PHASE0_MAX_TICKS when Φ shows a clear upward trend in the
+// final 5 000 ticks (see maybeExtendTicks). 50× headroom over the 1 000-tick
+// gate streak target.
+const PHASE0_DEFAULT_TICKS = 30000;
 const PHASE0_MAX_TICKS = 50000;
+// Sweep cap raised from 400 → 1000 to fit the 720-combo v13 grid plus
+// hand-edited explorations.
+const SWEEP_MAX_COMBOS = 1000;
 
 router.post("/sweeps", (req, res) => {
   const body = (req.body ?? {}) as {
@@ -731,8 +813,10 @@ router.post("/sweeps", (req, res) => {
   const neurons = clampNeurons(body.neurons);
   const topK = clampTopK(body.topK);
   const grid = cartesian(ranges);
-  if (grid.length === 0 || grid.length > 400) {
-    res.status(400).json({ error: "ranges must produce 1..400 combinations" });
+  if (grid.length === 0 || grid.length > SWEEP_MAX_COMBOS) {
+    res.status(400).json({
+      error: `ranges must produce 1..${SWEEP_MAX_COMBOS} combinations`,
+    });
     return;
   }
   const id = `s${nextSweepId++}`;
@@ -1223,6 +1307,27 @@ router.post("/batches", (req, res) => {
   }
   if (experiments.length > 200) {
     res.status(400).json({ error: "too many experiments (max 200)" });
+    return;
+  }
+  // v13 spec §3.2 — block batches that contain any locked higher-phase
+  // experiment until the Existence Gate has been opened. We surface ALL
+  // offending experiment IDs so the caller can either drop them or
+  // explicitly switch to a Phase-0-only batch.
+  const lockedExpIds = experiments
+    .filter((e) => isExperimentLocked(e.id))
+    .map((e) => e.id);
+  if (lockedExpIds.length > 0) {
+    const status = getPhaseStatus();
+    res.status(423).json({
+      error: "phase_locked",
+      message:
+        `Batch contains ${lockedExpIds.length} experiment(s) in locked ` +
+        `higher phases. Open the Existence Gate (≥ ` +
+        `${PHASE_LOCK_GATE_STREAK_REQUIRED} consecutive ticks of ` +
+        `Φ>0.05 ∧ PU>0.1 ∧ S_C>0.1) in a Phase-0 run first.`,
+      lockedExperimentIds: lockedExpIds,
+      phaseStatus: status,
+    });
     return;
   }
   const scale = (body.scale ?? 81) as 81 | 810 | 81000;
@@ -2123,10 +2228,12 @@ router.post("/automode", (req, res) => {
   );
   const baseRanges = body.baseRanges ?? PHASE0_DEFAULT_RANGES;
 
-  // Validate that the first iteration won't blow past the 400-combo cap.
+  // Validate that the first iteration won't blow past the global combo cap.
   const initialGrid = cartesian(baseRanges);
-  if (initialGrid.length === 0 || initialGrid.length > 400) {
-    res.status(400).json({ error: "baseRanges must produce 1..400 combinations" });
+  if (initialGrid.length === 0 || initialGrid.length > SWEEP_MAX_COMBOS) {
+    res.status(400).json({
+      error: `baseRanges must produce 1..${SWEEP_MAX_COMBOS} combinations`,
+    });
     return;
   }
 

@@ -1047,23 +1047,55 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
   } else {
     sim.existenceGate = 0;
     sim.gateStreak = 0;
-    // Surface the *primary* failure reason — the metric furthest below its
-    // threshold relative to the threshold itself — so the dashboard NO-GO
-    // indicator points at the worst offender, not just the first.
-    const gaps: Array<[number, string]> = [
-      [(sim.networkPhi - 0.05) / 0.05, "Φ below gate"],
-      [(sim.networkPU - 0.1) / 0.1, "PU below gate"],
-      [(sim.networkSC - 0.1) / 0.1, "S_C below gate"],
-    ];
-    let worstGap = Infinity;
-    let worstReason = "Gate not met";
-    for (const [g, label] of gaps) {
-      if (g < 0 && g < worstGap) {
-        worstGap = g;
-        worstReason = label;
+    // v13 spec §5.1 — six-category root-cause classifier. We compute a
+    // "badness" score for each candidate cause and emit the worst.
+    // Only run after a short burn-in so initial transients don't mis-classify.
+    if (sim.t < 200) {
+      sim.failureReason = "Warming up";
+    } else {
+      const N = ctx.P.N;
+      const Hmax = Math.log(Math.max(2, N));
+      const participationRatio = Hmax > 0 ? sim.networkH_C / Hmax : 0;
+      // Dominance: max(C_i) approximated via the inverse of effective
+      // participating fraction. effFrac = exp(H_C); maxC ≥ 1/effFrac.
+      const effFrac = Math.exp(sim.networkH_C);
+      const dominance = effFrac > 0 ? 1 / effFrac : 1;
+      // Coupling strength: how much γ·G can move the attention term. When
+      // γ·|G| is small the global field has no leverage on a-update.
+      const couplingMag = Math.abs(ctx.P.GAMMA_GLOBAL * sim.networkG);
+      // Temporal stability: 1 − coefficient-of-variation of recent Φ.
+      let temporalStab = 1;
+      if (sim.win_Phi.length >= 4) {
+        const mu =
+          sim.win_Phi.reduce((a, b) => a + b, 0) / sim.win_Phi.length;
+        const v =
+          sim.win_Phi.reduce((a, b) => a + (b - mu) * (b - mu), 0) /
+          sim.win_Phi.length;
+        const cv = Math.sqrt(v) / (Math.abs(mu) + 1e-6);
+        temporalStab = Math.max(0, 1 - cv);
       }
+      // Signal-to-noise: Φ relative to noise σ. <1 means noise dominates.
+      const snr = sim.networkPhi / (ctx.P.NOISE_SIGMA + 1e-6);
+      const candidates: Array<[number, string]> = [
+        // Score = how badly the signal violates its healthy threshold.
+        // Higher score → more severe.
+        [Math.max(0, 0.4 - participationRatio) * 5, "Low Participation"],
+        [Math.max(0, dominance - 0.5) * 4, "Dominance Collapse"],
+        [Math.max(0, 0.05 - couplingMag) * 6, "Weak Coupling"],
+        [Math.max(0, 0.3 - temporalStab) * 3, "Temporal Instability"],
+        [Math.max(0, 0.05 - Math.abs(sim.networkG)) * 6, "Global Field Ineffective"],
+        [Math.max(0, 1 - snr) * 2, "Noise Dominance"],
+      ];
+      let worstScore = 0;
+      let worstReason = "Gate not met";
+      for (const [s, label] of candidates) {
+        if (s > worstScore) {
+          worstScore = s;
+          worstReason = label;
+        }
+      }
+      sim.failureReason = worstReason;
     }
-    sim.failureReason = worstReason;
   }
 
   let phaseRegion = "DISORDERED";

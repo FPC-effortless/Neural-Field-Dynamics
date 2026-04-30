@@ -12,8 +12,8 @@ The previous v12 used a hard top-K bottleneck which was unable to clear the **Ex
 | --- | --- | --- |
 | `TAU_ATT` (τ) | 0.7 | softmax temperature on attention logits |
 | `GAMMA_GLOBAL` (γ) | 1.0 | global field coupling strength |
-| `BETA_ENTROPY` (β) | 0.4 | entropy gradient pressure (v13: was δ's old default) |
-| `DELTA_TEMPORAL` (δ) | 0.3 | temporal coherence (slow EMA pull) — v13 sweep range now `[0.1, 0.3, 0.5]` |
+| `BETA_ENTROPY` (β) | 0.2 | entropy gradient pressure — broad-participation reward |
+| `DELTA_TEMPORAL` (δ) | 0.3 | temporal coherence (slow EMA pull) |
 | `NOISE_SIGMA` (σ) | 0.02 | Box-Muller exploration noise |
 
 `ALPHA_SLOW = 0.02` updates the per-neuron slow apical EMA `a_slow`, and `PU_LAG = 4` is the lag used by the Predictive Utility MI estimator. The legacy top-K path is still reachable by setting `ATTN_MODE = "topk"` for ablation experiments.
@@ -41,27 +41,53 @@ Large CAR ⇒ Φ is rising because the field genuinely integrates (high particip
 
 The Existence-Gate failure-reason text now reports the metric furthest below its threshold (worst relative gap), so the dashboard `NO-GO` badge points at the primary blocker rather than the first metric checked.
 
-The default `POST /api/sweeps` body has been expanded to the post-B3 targeted Phase 0 sweep (3 × 4 × 3 × 3 × 3 = 324 combos):
+The default `POST /api/sweeps` body has been expanded to the **v13 final Phase-0 sweep — 5 × 4 × 4 × 3 × 3 = 720 combinations**, designed to force strong global coupling:
 
 ```json
 {
-  "TAU_ATT":        [0.7, 1.0, 1.5],
+  "TAU_ATT":        [0.7, 1.0, 1.5, 2.0, 3.0],
   "GAMMA_GLOBAL":   [1.0, 1.5, 2.0, 3.0],
-  "BETA_ENTROPY":   [0.2, 0.4, 0.6],
-  "DELTA_TEMPORAL": [0.1, 0.3, 0.5],
+  "BETA_ENTROPY":   [0.1, 0.3, 0.5, 0.8],
+  "DELTA_TEMPORAL": [0.2, 0.4, 0.6],
   "NOISE_SIGMA":    [0.01, 0.02, 0.05]
 }
 ```
 
-**v13 (April 2026) spec change:** β and δ default ranges are SWAPPED relative to v12. The Existence-Gate streak target is raised from 100 → 1000 ticks (held continuously) before the gate is considered "open". Default `ticksPerCombo` is raised from 20 000 → 50 000 so the longer streak target is reachable in a single sample. Server constants in `artifacts/api-server/src/routes/runs.ts`: `PHASE0_DEFAULT_TICKS = 50000`, `PHASE0_MAX_TICKS = 50000`. The sweep cap of 400 combinations is unchanged.
+**v13 final-spec deltas:** τ extended to `[0.7, 1.0, 1.5, 2.0, 3.0]`; β extended to `[0.1, 0.3, 0.5, 0.8]`; δ kept at `[0.2, 0.4, 0.6]` (its original coherence range). The Existence-Gate streak target is **1000 consecutive ticks** before the gate is considered "open". Default `ticksPerCombo` is **30 000** (`PHASE0_DEFAULT_TICKS`), and may be manually raised up to `PHASE0_MAX_TICKS = 50000` when a borderline combo shows a clear upward Φ trend in its final 5 000 ticks. The sweep cap is raised from 400 → **1000** combinations (`SWEEP_MAX_COMBOS`) to fit the 720-combo grid plus hand-edited explorations.
+
+### Phase lock — higher phases gated by the Existence Gate (v13)
+
+Spec §3.2 — every experiment in a phase above PH0 is **locked** until the Existence Gate (`Φ > 0.05 ∧ PU > 0.1 ∧ S_C > 0.1`) has held continuously for ≥ 1000 ticks in at least one Phase-0 run. Enforced server-side: `POST /api/runs` and `POST /api/batches` return HTTP `423 Locked` with `{ error: "phase_locked", lockedExperimentIds, phaseStatus }` when a request includes any locked experiment. Lock state lives in `data/phase-status.json`, persisted across restarts. Endpoints:
+
+- `GET /api/phase-status` — current state including `gateStreakRequired`
+- `POST /api/phase-status/override` — body `{ enabled: boolean }`. Bypasses the lock for debugging; does NOT count as the gate having opened.
+- `POST /api/phase-status/reset` — wipes the unlock back to its initial state.
+
+`GET /api/experiments` now also tags each experiment / phase group with `locked: boolean` so the UI can grey-out blocked phases without making a second call. The Phase 0 sweep / Auto-Mode / single-PH0 run paths automatically promote the unlock as soon as any qualifying gate streak is observed (see `maybeMarkGateOpened` in `phaseLockStore.ts`). The dashboard renders a **`PhaseLockBanner`** at the top of the page (red while locked, green once opened) with one-click `MANUAL OVERRIDE` and `RESET` controls.
+
+### Six-category failure classifier (v13)
+
+Spec §5.1 — when the Existence Gate is closed, `Stats.failureReason` now reports the *root cause* rather than which gate metric is failing. The classifier picks the worst of six candidates each tick (after a 200-tick burn-in to avoid transients):
+
+| Cause | Triggered by |
+| --- | --- |
+| `Low Participation` | `H_C / log(N) < 0.4` (attention concentrated on too few neurons) |
+| `Dominance Collapse` | inferred max-C > 0.5 (one neuron monopolises attention) |
+| `Weak Coupling` | `|γ · G| < 0.05` (global field has no leverage on a-update) |
+| `Temporal Instability` | `1 − CV(Φ recent) < 0.3` (Φ thrashes from tick to tick) |
+| `Global Field Ineffective` | `|G| < 0.05` (consensus signal too small to act on) |
+| `Noise Dominance` | `Φ / σ < 1` (signal can't beat exploration noise) |
+
+`Warming up` is emitted while `t < 200`. The string surfaces unchanged in `RunDetail.latestStats.failureReason` and the live MetricsPanel.
 
 ### AUTO SWEEP UI (April 2026)
 
-The dashboard's **⚡ AUTO SWEEP** header button now opens a one-click launcher for the full 324-combo Phase 0 grid. The launch form exposes:
+The dashboard's **⚡ AUTO SWEEP** header button now opens a one-click launcher for the full 720-combo Phase 0 grid. The launch form exposes:
 
 - `SCALE` — 81 / 810 / 81 000 (G ∈ {9, 29, 285})
 - `NEURONS (override)` — optional explicit neuron count, clamped server-side to `[9, 102 400]`. When set, the simulator grid is rebuilt for `G = round(√neurons)` and overrides `SCALE`.
-- `TICKS PER COMBO` — 500 – 50 000
+- `TOP_K (override)` — optional absolute count of "conscious" neurons under `ATTN_MODE = "topk"`.
+- `TICKS PER COMBO` — 500 – 50 000 (default 30 000)
 
 While the sweep runs, the combos table reports a new `CAR` column (max Coherence Amplification Ratio seen so far) and supports live sorting by `CAR ↓` (default), `STREAK ↓`, or `INDEX ↑`. The "best combo" tiebreaker is now `gateStreak → bestCAR → Φ → PU` so the highlighted ★ row tracks the table's CAR-sorted leader.
 

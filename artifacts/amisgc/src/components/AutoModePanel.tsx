@@ -23,18 +23,18 @@ const fmt = (v: number | null | undefined, p = 3): string => {
 const ts = (n: number | null): string =>
   n ? new Date(n).toISOString().slice(11, 19) : "—";
 
-// Default ranges shown to the user. Match server PHASE0_DEFAULT_RANGES (v13:
-// β and δ swapped). Auto-Mode iter 1 sweeps these, then refines around the
-// best combo each subsequent iteration.
+// Default ranges shown to the user. Must mirror the server's
+// PHASE0_DEFAULT_RANGES (v13 final spec — 720-combo grid). Auto-Mode iter 1
+// sweeps these, then refines around the best combo each subsequent iteration.
 const DEFAULT_RANGES: Record<string, number[]> = {
-  TAU_ATT: [0.7, 1.0, 1.5],
+  TAU_ATT: [0.7, 1.0, 1.5, 2.0, 3.0],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
-  BETA_ENTROPY: [0.2, 0.4, 0.6],
-  DELTA_TEMPORAL: [0.1, 0.3, 0.5],
+  BETA_ENTROPY: [0.1, 0.3, 0.5, 0.8],
+  DELTA_TEMPORAL: [0.2, 0.4, 0.6],
   NOISE_SIGMA: [0.01, 0.02, 0.05],
 };
 
-const DEFAULT_TICKS = 50000;
+const DEFAULT_TICKS = 30000;
 const DEFAULT_MAX_ITER = 4;
 const DEFAULT_GATE_STREAK = 1000;
 

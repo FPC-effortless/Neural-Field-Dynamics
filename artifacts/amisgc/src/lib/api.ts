@@ -28,12 +28,34 @@ export interface ExperimentSummary {
   metric: string;
   targetVal: number;
   targetDir: 1 | -1;
+  // v13 spec §3.2 — true when this experiment is in a phase above PH0 and the
+  // Existence Gate has not yet been opened (or manually overridden).
+  locked?: boolean;
 }
 
 export interface PhaseGroup {
   phase: string;
   label: string;
   experimentIds: string[];
+  locked?: boolean;
+}
+
+// v13 spec §3.2 — phase-lock state surfaced to the UI.
+export interface PhaseStatus {
+  gateOpened: boolean;
+  gateOpenedAt: number | null;
+  openedByRunId: string | null;
+  openedByExperimentId: string | null;
+  openingGateStreak: number;
+  manualOverride: boolean;
+  manualOverrideAt: number | null;
+  history: Array<{
+    ts: number;
+    runId: string;
+    experimentId: string | null;
+    gateStreak: number;
+  }>;
+  gateStreakRequired?: number;
 }
 
 export interface Stats {
@@ -182,9 +204,22 @@ export interface CreateRunRequest {
 
 export const api = {
   experiments: () =>
-    jsonFetch<{ experiments: ExperimentSummary[]; groups: PhaseGroup[] }>(
-      `${API_PREFIX}/experiments`,
-    ),
+    jsonFetch<{
+      experiments: ExperimentSummary[];
+      groups: PhaseGroup[];
+      phaseStatus?: PhaseStatus;
+    }>(`${API_PREFIX}/experiments`),
+  phaseStatus: () =>
+    jsonFetch<PhaseStatus>(`${API_PREFIX}/phase-status`),
+  setPhaseOverride: (enabled: boolean) =>
+    jsonFetch<PhaseStatus>(`${API_PREFIX}/phase-status/override`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  resetPhaseStatus: () =>
+    jsonFetch<PhaseStatus>(`${API_PREFIX}/phase-status/reset`, {
+      method: "POST",
+    }),
   listRuns: () =>
     jsonFetch<{ runs: RunSummary[] }>(`${API_PREFIX}/runs`),
   getRun: (id: string) =>
