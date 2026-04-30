@@ -421,6 +421,7 @@ router.post("/runs", (req, res) => {
         record.error = (err as Error).message;
         record.completedAt = Date.now();
         broadcast(record, "error", { message: record.error });
+        endAllSubscribers(record.subscribers);
       });
 
     res.status(201).json({ id, status: record.status, type: "arc" });

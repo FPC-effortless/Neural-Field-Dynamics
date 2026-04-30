@@ -298,6 +298,18 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
       es.close();
     });
   }
+  // The server broadcasts `cancelled` immediately when a DELETE arrives, before
+  // the runner loop unwinds and emits the final `complete` event. Treating it
+  // as a terminal event mirrors the complete path: call onComplete (so the UI
+  // refreshes the run detail) and close the EventSource.
+  es.addEventListener("cancelled", (ev: MessageEvent) => {
+    try {
+      handlers.onComplete?.(JSON.parse(ev.data));
+    } catch {
+      /* ignore */
+    }
+    es.close();
+  });
   if (handlers.onArcSample) {
     es.addEventListener("arc_sample", (ev: MessageEvent) => {
       try {
