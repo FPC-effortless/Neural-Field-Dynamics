@@ -249,11 +249,79 @@ export interface SseHandlers {
   onError?: (msg: string) => void;
 }
 
+// ─── Reconnecting SSE helper ─────────────────────────────────────────────────
+// Wraps EventSource with exponential-backoff reconnection so transient network
+// drops don't permanently break a live run, sweep, batch or auto-mode stream.
+//
+// The browser's built-in reconnect uses a fixed delay from the SSE `retry:`
+// field; this gives us 1 s → 2 s → 4 s → … → 30 s (capped) instead.
+//
+// Terminal-event handlers must call `sse.close()` (the wrapper's close, not the
+// raw EventSource's) to prevent reconnection after the server intentionally ends
+// the stream.
+
+const SSE_RECONNECT_BASE_MS = 1_000;
+const SSE_RECONNECT_MAX_MS = 30_000;
+
+interface ReconnectingSse {
+  addEventListener(event: string, handler: (ev: MessageEvent) => void): void;
+  close(): void;
+}
+
+function openSseWithReconnect(url: string): ReconnectingSse {
+  let terminated = false;
+  let attempt = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let current: EventSource | null = null;
+
+  const listeners: Array<{ event: string; handler: (ev: MessageEvent) => void }> = [];
+
+  function connect() {
+    if (terminated) return;
+    const es = new EventSource(url);
+    current = es;
+    for (const { event, handler } of listeners) {
+      es.addEventListener(event, handler);
+    }
+    es.addEventListener("error", () => {
+      if (terminated) return;
+      es.close();
+      current = null;
+      const delay = Math.min(SSE_RECONNECT_BASE_MS * 2 ** attempt, SSE_RECONNECT_MAX_MS);
+      attempt++;
+      timer = setTimeout(connect, delay);
+    });
+  }
+
+  function close() {
+    terminated = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    current?.close();
+    current = null;
+  }
+
+  function addEventListener(event: string, handler: (ev: MessageEvent) => void) {
+    // Wrap so any received message resets the backoff counter.
+    const wrapped = (ev: MessageEvent) => {
+      attempt = 0;
+      handler(ev);
+    };
+    listeners.push({ event, handler: wrapped });
+    current?.addEventListener(event, wrapped);
+  }
+
+  connect();
+  return { addEventListener, close };
+}
+
 export function subscribeRun(id: string, handlers: SseHandlers): () => void {
   const url = api.streamUrl(id);
-  const es = new EventSource(url);
+  const sse = openSseWithReconnect(url);
   if (handlers.onSnapshot) {
-    es.addEventListener("snapshot", (ev: MessageEvent) => {
+    sse.addEventListener("snapshot", (ev: MessageEvent) => {
       try {
         handlers.onSnapshot?.(JSON.parse(ev.data) as RunDetail);
       } catch {
@@ -262,7 +330,7 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
     });
   }
   if (handlers.onSample) {
-    es.addEventListener("sample", (ev: MessageEvent) => {
+    sse.addEventListener("sample", (ev: MessageEvent) => {
       try {
         handlers.onSample?.(JSON.parse(ev.data) as { t: number; stats: Stats });
       } catch {
@@ -271,7 +339,7 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
     });
   }
   if (handlers.onPhase) {
-    es.addEventListener("phase", (ev: MessageEvent) => {
+    sse.addEventListener("phase", (ev: MessageEvent) => {
       try {
         handlers.onPhase?.(JSON.parse(ev.data) as { t: number; phaseRegion: string });
       } catch {
@@ -280,7 +348,7 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
     });
   }
   if (handlers.onStart) {
-    es.addEventListener("start", (ev: MessageEvent) => {
+    sse.addEventListener("start", (ev: MessageEvent) => {
       try {
         handlers.onStart?.(JSON.parse(ev.data));
       } catch {
@@ -288,30 +356,29 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
       }
     });
   }
-  if (handlers.onComplete) {
-    es.addEventListener("complete", (ev: MessageEvent) => {
-      try {
-        handlers.onComplete?.(JSON.parse(ev.data));
-      } catch {
-        /* ignore */
-      }
-      es.close();
-    });
-  }
-  // The server broadcasts `cancelled` immediately when a DELETE arrives, before
-  // the runner loop unwinds and emits the final `complete` event. Treating it
-  // as a terminal event mirrors the complete path: call onComplete (so the UI
-  // refreshes the run detail) and close the EventSource.
-  es.addEventListener("cancelled", (ev: MessageEvent) => {
+  // Terminal: complete — refresh run detail from server and stop reconnecting.
+  sse.addEventListener("complete", (ev: MessageEvent) => {
     try {
       handlers.onComplete?.(JSON.parse(ev.data));
     } catch {
       /* ignore */
     }
-    es.close();
+    sse.close();
+  });
+  // The server broadcasts `cancelled` immediately when a DELETE arrives, before
+  // the runner loop unwinds and emits the final `complete` event. Treating it
+  // as a terminal event mirrors the complete path: call onComplete (so the UI
+  // refreshes the run detail) and stop reconnecting.
+  sse.addEventListener("cancelled", (ev: MessageEvent) => {
+    try {
+      handlers.onComplete?.(JSON.parse(ev.data));
+    } catch {
+      /* ignore */
+    }
+    sse.close();
   });
   if (handlers.onArcSample) {
-    es.addEventListener("arc_sample", (ev: MessageEvent) => {
+    sse.addEventListener("arc_sample", (ev: MessageEvent) => {
       try {
         handlers.onArcSample?.(
           JSON.parse(ev.data) as { done: number; total: number; sample: ArcSample },
@@ -321,10 +388,7 @@ export function subscribeRun(id: string, handlers: SseHandlers): () => void {
       }
     });
   }
-  es.addEventListener("error", () => {
-    handlers.onError?.("stream error");
-  });
-  return () => es.close();
+  return () => sse.close();
 }
 
 // ─── Sweep client ────────────────────────────────────────────────────────────
@@ -662,10 +726,10 @@ export interface BatchHandlers {
 }
 
 export function subscribeBatch(id: string, handlers: BatchHandlers): () => void {
-  const es = new EventSource(batchApi.streamUrl(id));
+  const sse = openSseWithReconnect(batchApi.streamUrl(id));
   const bind = <T,>(name: string, fn?: (data: T) => void) => {
     if (!fn) return;
-    es.addEventListener(name, (ev: MessageEvent) => {
+    sse.addEventListener(name, (ev: MessageEvent) => {
       try {
         fn(JSON.parse(ev.data) as T);
       } catch {
@@ -681,23 +745,22 @@ export function subscribeBatch(id: string, handlers: BatchHandlers): () => void 
     "item_complete",
     handlers.onItemComplete,
   );
-  es.addEventListener("batch_complete", (ev: MessageEvent) => {
+  sse.addEventListener("batch_complete", (ev: MessageEvent) => {
     try {
       handlers.onBatchComplete?.(JSON.parse(ev.data) as BatchDetail);
     } catch {
       /* ignore */
     }
-    es.close();
+    sse.close();
   });
-  es.addEventListener("error", () => handlers.onError?.("stream error"));
-  return () => es.close();
+  return () => sse.close();
 }
 
 export function subscribeSweep(id: string, handlers: SweepHandlers): () => void {
-  const es = new EventSource(sweepApi.streamUrl(id));
+  const sse = openSseWithReconnect(sweepApi.streamUrl(id));
   const bind = <T,>(name: string, fn?: (data: T) => void) => {
     if (!fn) return;
-    es.addEventListener(name, (ev: MessageEvent) => {
+    sse.addEventListener(name, (ev: MessageEvent) => {
       try {
         fn(JSON.parse(ev.data) as T);
       } catch {
@@ -713,23 +776,20 @@ export function subscribeSweep(id: string, handlers: SweepHandlers): () => void 
     "combo_complete",
     handlers.onComboComplete,
   );
-  // Treat `sweep_cancelled` as a terminal event equivalent to
-  // `sweep_complete`: the server emits it the moment a DELETE arrives so
-  // the UI can flip to "cancelled" immediately, instead of waiting for the
-  // orchestrator to unwind out of the in-flight simTick (which can take
-  // many seconds at large N).
+  // Treat `sweep_cancelled` as a terminal event equivalent to `sweep_complete`:
+  // the server emits it the moment a DELETE arrives so the UI can flip to
+  // "cancelled" immediately, instead of waiting for the runner to unwind.
   const onTerminal = (ev: MessageEvent) => {
     try {
       handlers.onSweepComplete?.(JSON.parse(ev.data) as SweepDetail);
     } catch {
       /* ignore */
     }
-    es.close();
+    sse.close();
   };
-  es.addEventListener("sweep_complete", onTerminal);
-  es.addEventListener("sweep_cancelled", onTerminal);
-  es.addEventListener("error", () => handlers.onError?.("stream error"));
-  return () => es.close();
+  sse.addEventListener("sweep_complete", onTerminal);
+  sse.addEventListener("sweep_cancelled", onTerminal);
+  return () => sse.close();
 }
 
 // ─── Auto-Mode client ────────────────────────────────────────────────────────
@@ -890,10 +950,10 @@ export function subscribeAutoMode(
   id: string,
   handlers: AutoModeHandlers,
 ): () => void {
-  const es = new EventSource(autoModeApi.streamUrl(id));
+  const sse = openSseWithReconnect(autoModeApi.streamUrl(id));
   const bind = <T,>(name: string, fn?: (data: T) => void) => {
     if (!fn) return;
-    es.addEventListener(name, (ev: MessageEvent) => {
+    sse.addEventListener(name, (ev: MessageEvent) => {
       try {
         fn(JSON.parse(ev.data) as T);
       } catch {
@@ -932,10 +992,9 @@ export function subscribeAutoMode(
     } catch {
       /* ignore */
     }
-    es.close();
+    sse.close();
   };
-  es.addEventListener("automode_complete", onTerminal);
-  es.addEventListener("automode_cancelled", onTerminal);
-  es.addEventListener("error", () => handlers.onError?.("stream error"));
-  return () => es.close();
+  sse.addEventListener("automode_complete", onTerminal);
+  sse.addEventListener("automode_cancelled", onTerminal);
+  return () => sse.close();
 }
