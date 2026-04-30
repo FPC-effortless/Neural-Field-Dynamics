@@ -3,20 +3,13 @@ import { Panel, MR, Pill } from "./Panel";
 import { Sparkline } from "./Sparkline";
 import { PCOL } from "../lib/colors";
 import type { Stats } from "../lib/api";
+import { fmt } from "../lib/format";
 
 interface MetricsPanelProps {
   stats: Stats | null;
   series: Record<string, number[]>;
   taskKey: string;
 }
-
-const fmt = (v: number | undefined, p = 3): string => {
-  if (v === undefined || v === null || !Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 1000) return v.toFixed(0);
-  if (Math.abs(v) >= 100) return v.toFixed(1);
-  if (Math.abs(v) >= 10) return v.toFixed(2);
-  return v.toFixed(p);
-};
 
 export const MetricsPanel = memo(function MetricsPanel({
   stats,

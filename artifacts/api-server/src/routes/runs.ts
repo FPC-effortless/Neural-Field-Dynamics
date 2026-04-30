@@ -1,6 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomicSync } from "../lib/atomicWrite.js";
 import {
   startRun,
   ALL_EXPERIMENTS,
@@ -138,6 +139,101 @@ function pruneRuns(): void {
   }
 }
 
+// ─── Input sanitisation ─────────────────────────────────────────────────────
+// Everything from the wire goes through one of these. We accept only known
+// scalar shapes; NaN, Infinity, strings inside numeric slots, and stray
+// nested objects are silently dropped so the simulator's math layer never
+// sees a bad value. Any limit (key length, array length) is generous enough
+// for normal use but small enough that a malicious payload can't allocate
+// gigabytes server-side before we even look at it.
+const MAX_PARAM_KEY_LEN = 64;
+const MAX_RANGE_VALUES = 16;
+
+function sanitizeCustomParams(
+  input: unknown,
+): Record<string, number | boolean> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const out: Record<string, number | boolean> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof k !== "string" || k.length === 0 || k.length > MAX_PARAM_KEY_LEN) {
+      continue;
+    }
+    if (typeof v === "boolean") {
+      out[k] = v;
+    } else if (typeof v === "number" && Number.isFinite(v)) {
+      out[k] = v;
+    }
+    // Strings, NaN, Infinity, nested objects, null — all dropped.
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sanitizeRanges(input: unknown): Record<string, number[]> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const out: Record<string, number[]> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof k !== "string" || k.length === 0 || k.length > MAX_PARAM_KEY_LEN) {
+      continue;
+    }
+    if (!Array.isArray(v)) continue;
+    const nums: number[] = [];
+    for (const x of v) {
+      if (typeof x === "number" && Number.isFinite(x)) nums.push(x);
+      if (nums.length >= MAX_RANGE_VALUES) break;
+    }
+    if (nums.length > 0) out[k] = nums;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// ─── SSE heartbeat helpers ───────────────────────────────────────────────────
+// Every /stream endpoint installs a 15s heartbeat to keep the proxied SSE
+// connection alive. Earlier the interval was only cleared when the client
+// closed the request — but if a run / sweep / batch / automode finished
+// first, the orchestrator called `sub.end()` and forgot the timer, leaving
+// it running until its own write throw eventually self-cleared. With many
+// short-lived runs this leaks both heap and timer slots.
+//
+// We now stash the timer on the response object and clear it from a single
+// helper that's called everywhere a subscriber is removed — both on the
+// orchestrator's "all done, kick everyone off" path and on the per-client
+// "tab closed" path.
+const HEARTBEAT_INTERVAL_MS = 15000;
+type ResWithHeartbeat = Response & { __heartbeat?: NodeJS.Timeout };
+
+function installHeartbeat(res: Response): void {
+  const r = res as ResWithHeartbeat;
+  const interval = setInterval(() => {
+    try {
+      r.write(`: heartbeat ${Date.now()}\n\n`);
+    } catch {
+      clearInterval(interval);
+      delete r.__heartbeat;
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  r.__heartbeat = interval;
+}
+
+function stopHeartbeat(res: Response): void {
+  const r = res as ResWithHeartbeat;
+  if (r.__heartbeat) {
+    clearInterval(r.__heartbeat);
+    delete r.__heartbeat;
+  }
+}
+
+function endAllSubscribers(subs: Set<Response>): void {
+  for (const sub of subs) {
+    stopHeartbeat(sub);
+    try {
+      sub.end();
+    } catch {
+      /* ignore — already closed */
+    }
+  }
+  subs.clear();
+}
+
 const router: IRouter = Router();
 
 router.get("/experiments", (_req, res) => {
@@ -235,7 +331,10 @@ router.post("/runs", (req, res) => {
   const ticks = Math.min(Math.max(requestedTicks, 100), 200000);
 
   // Top-K override merges into customParams as TOPK_FRACTION = topK / N.
-  const customParams = applyTopKOverride(body.customParams, topK, scale, neurons);
+  // sanitizeCustomParams strips NaN / Infinity / non-scalar values before
+  // they ever reach the simulator's math layer.
+  const cleanCustomParams = sanitizeCustomParams(body.customParams);
+  const customParams = applyTopKOverride(cleanCustomParams, topK, scale, neurons);
 
   const record: RunRecord = {
     id,
@@ -277,6 +376,11 @@ router.post("/runs", (req, res) => {
       numTasks: body.arc?.numTasks ?? 20,
       trainTicksPerTask: body.arc?.trainTicksPerTask ?? 1500,
       testInputs: body.arc?.testInputs ?? 3,
+      // Thread the run-level seed through so ARC probe inputs are
+      // reproducible across reruns of the same configuration.
+      ...(typeof body.seed === "number" && Number.isFinite(body.seed)
+        ? { seed: Math.floor(body.seed) }
+        : {}),
       signal,
       onProgress: (done, total, sample) => {
         record.ticksDone = done;
@@ -302,14 +406,7 @@ router.post("/runs", (req, res) => {
             finalStats: result.finalStats,
           },
         });
-        for (const sub of record.subscribers) {
-          try {
-            sub.end();
-          } catch {
-            /* */
-          }
-        }
-        record.subscribers.clear();
+        endAllSubscribers(record.subscribers);
       })
       .catch((err) => {
         record.status = "error";
@@ -365,14 +462,7 @@ router.post("/runs", (req, res) => {
         gateStreak: finalStreak,
       });
       broadcast(record, "complete", e);
-      for (const sub of record.subscribers) {
-        try {
-          sub.end();
-        } catch {
-          /* */
-        }
-      }
-      record.subscribers.clear();
+      endAllSubscribers(record.subscribers);
     },
     onError: (err) => {
       record.status = "error";
@@ -447,15 +537,9 @@ router.get("/runs/:id/stream", (req, res) => {
   }
   r.subscribers.add(res);
   // Heartbeat to prevent idle disconnect
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(`: heartbeat ${Date.now()}\n\n`);
-    } catch {
-      clearInterval(heartbeat);
-    }
-  }, 15000);
+  installHeartbeat(res);
   req.on("close", () => {
-    clearInterval(heartbeat);
+    stopHeartbeat(res);
     r.subscribers.delete(res);
   });
 });
@@ -522,10 +606,9 @@ try {
 
 function persistSweep(s: SweepRecord): void {
   try {
-    writeFileSync(
+    writeFileAtomicSync(
       join(SWEEPS_DIR, `${s.id}.json`),
       JSON.stringify(serializeSweep(s), null, 2),
-      "utf8",
     );
   } catch {
     /* best-effort */
@@ -804,7 +887,11 @@ router.post("/sweeps", (req, res) => {
     autoModeId?: string;
     autoModeIteration?: number;
   };
-  const ranges: Record<string, number[]> = body.ranges ?? PHASE0_DEFAULT_RANGES;
+  // sanitizeRanges drops bad numeric values (NaN/Infinity/strings) and
+  // caps each axis at MAX_RANGE_VALUES so a malicious client can't ask
+  // for a 10⁹-cell grid.
+  const ranges: Record<string, number[]> =
+    sanitizeRanges(body.ranges) ?? PHASE0_DEFAULT_RANGES;
   const ticksPerCombo = Math.min(
     Math.max(body.ticksPerCombo ?? PHASE0_DEFAULT_TICKS, 500),
     PHASE0_MAX_TICKS,
@@ -878,14 +965,7 @@ router.post("/sweeps", (req, res) => {
     sweep.completedAt = Date.now();
     persistSweep(sweep);
     broadcastSweep(sweep, "sweep_complete", serializeSweep(sweep));
-    for (const sub of sweep.subscribers) {
-      try {
-        sub.end();
-      } catch {
-        /* */
-      }
-    }
-    sweep.subscribers.clear();
+    endAllSubscribers(sweep.subscribers);
   })().catch(() => undefined);
 
   res.status(201).json({ id, total: sweep.combos.length });
@@ -952,15 +1032,9 @@ router.get("/sweeps/:id/stream", (req, res) => {
     return;
   }
   s.subscribers.add(res);
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(`: heartbeat ${Date.now()}\n\n`);
-    } catch {
-      clearInterval(heartbeat);
-    }
-  }, 15000);
+  installHeartbeat(res);
   req.on("close", () => {
-    clearInterval(heartbeat);
+    stopHeartbeat(res);
     s.subscribers.delete(res);
   });
 });
@@ -1042,10 +1116,9 @@ try {
 function persistBatch(b: BatchRecord): void {
   try {
     const snapshot = serializeBatch(b);
-    writeFileSync(
+    writeFileAtomicSync(
       join(BATCHES_DIR, `${b.id}.json`),
       JSON.stringify(snapshot, null, 2),
-      "utf8",
     );
   } catch {
     /* best-effort */
@@ -1430,14 +1503,7 @@ router.post("/batches", (req, res) => {
     batch.completedAt = Date.now();
     persistBatch(batch);
     broadcastBatch(batch, "batch_complete", serializeBatch(batch));
-    for (const sub of batch.subscribers) {
-      try {
-        sub.end();
-      } catch {
-        /* */
-      }
-    }
-    batch.subscribers.clear();
+    endAllSubscribers(batch.subscribers);
   })().catch(() => undefined);
 
   res.status(201).json({
@@ -1839,14 +1905,7 @@ router.post("/batches/:id/rerun", (req, res) => {
     batch.completedAt = Date.now();
     persistBatch(batch);
     broadcastBatch(batch, "batch_complete", serializeBatch(batch));
-    for (const sub of batch.subscribers) {
-      try {
-        sub.end();
-      } catch {
-        /* */
-      }
-    }
-    batch.subscribers.clear();
+    endAllSubscribers(batch.subscribers);
   })().catch(() => undefined);
 
   res.status(201).json({
@@ -1878,15 +1937,9 @@ router.get("/batches/:id/stream", (req, res) => {
     return;
   }
   b.subscribers.add(res);
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(`: heartbeat ${Date.now()}\n\n`);
-    } catch {
-      clearInterval(heartbeat);
-    }
-  }, 15000);
+  installHeartbeat(res);
   req.on("close", () => {
-    clearInterval(heartbeat);
+    stopHeartbeat(res);
     b.subscribers.delete(res);
   });
 });
@@ -1978,10 +2031,9 @@ function serializeAutoMode(a: AutoModeRecord) {
 
 function persistAutoMode(a: AutoModeRecord): void {
   try {
-    writeFileSync(
+    writeFileAtomicSync(
       join(AUTOMODE_DIR, `${a.id}.json`),
       JSON.stringify(serializeAutoMode(a), null, 2),
-      "utf8",
     );
   } catch {
     /* best-effort */
@@ -2241,7 +2293,7 @@ router.post("/automode", (req, res) => {
     Math.max(body.gateStreakTarget ?? 1000, 1),
     PHASE0_MAX_TICKS,
   );
-  const baseRanges = body.baseRanges ?? PHASE0_DEFAULT_RANGES;
+  const baseRanges = sanitizeRanges(body.baseRanges) ?? PHASE0_DEFAULT_RANGES;
 
   // Validate that the first iteration won't blow past the global combo cap.
   const initialGrid = cartesian(baseRanges);
@@ -2337,14 +2389,7 @@ router.post("/automode", (req, res) => {
       record.completedAt = Date.now();
       persistAutoMode(record);
       broadcastAutoMode(record, "automode_complete", serializeAutoMode(record));
-      for (const sub of record.subscribers) {
-        try {
-          sub.end();
-        } catch {
-          /* */
-        }
-      }
-      record.subscribers.clear();
+      endAllSubscribers(record.subscribers);
     }
   })().catch(() => undefined);
 
@@ -2433,15 +2478,9 @@ router.get("/automode/:id/stream", (req, res) => {
     return;
   }
   a.subscribers.add(res);
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(`: heartbeat ${Date.now()}\n\n`);
-    } catch {
-      clearInterval(heartbeat);
-    }
-  }, 15000);
+  installHeartbeat(res);
   req.on("close", () => {
-    clearInterval(heartbeat);
+    stopHeartbeat(res);
     a.subscribers.delete(res);
   });
 });

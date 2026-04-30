@@ -6,18 +6,12 @@ import {
   type SweepDetail,
   type SweepCombo,
 } from "../lib/api";
+import { fmt, parseNumOr } from "../lib/format";
 
 interface SweepPanelProps {
   open: boolean;
   onClose: () => void;
 }
-
-const fmt = (v: number, p = 3): string => {
-  if (!Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 100) return v.toFixed(1);
-  if (Math.abs(v) >= 10) return v.toFixed(2);
-  return v.toFixed(p);
-};
 
 function paramSummary(p: Record<string, number | boolean | string>): string {
   return Object.entries(p)
@@ -77,8 +71,12 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
     setLaunching(true);
     setError(null);
     try {
-      const neuronsNum = neuronsStr.trim() === "" ? undefined : Number(neuronsStr);
-      const topKNum = topKStr.trim() === "" ? undefined : Number(topKStr);
+      // Use the shared NaN-safe parser instead of bare Number(): an
+      // accidentally-typed "abc" used to silently become NaN and propagate
+      // all the way to the simulator. parseNumOr returns undefined on bad
+      // input so the request body simply omits the field.
+      const neuronsNum = parseNumOr(neuronsStr, undefined);
+      const topKNum = parseNumOr(topKStr, undefined);
       const body: {
         ticksPerCombo: number;
         scale: 81 | 810 | 81000;

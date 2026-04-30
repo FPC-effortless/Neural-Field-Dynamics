@@ -7,21 +7,17 @@ import {
   type AutoModeIterationSummary,
   type CreateAutoModeRequest,
 } from "../lib/api";
+import { fmt } from "../lib/format";
 
 interface AutoModePanelProps {
   open: boolean;
   onClose: () => void;
 }
 
-const fmt = (v: number | null | undefined, p = 3): string => {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 100) return v.toFixed(1);
-  if (Math.abs(v) >= 10) return v.toFixed(2);
-  return v.toFixed(p);
-};
-
-const ts = (n: number | null): string =>
-  n ? new Date(n).toISOString().slice(11, 19) : "—";
+// AutoMode wants UTC HH:MM:SS (different from local-time fmtTs in lib/format)
+// so iteration timestamps line up across timezones in shared screenshots.
+const ts = (n: number | null | undefined): string =>
+  n && Number.isFinite(n) ? new Date(n).toISOString().slice(11, 19) : "—";
 
 // Default ranges shown to the user. Must mirror the server's
 // PHASE0_DEFAULT_RANGES (v13 final spec — 720-combo grid). Auto-Mode iter 1

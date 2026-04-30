@@ -57,13 +57,32 @@ function pushSeries(prev: Record<string, number[]>, stats: Stats): Record<string
   return next;
 }
 
+// Single-modal manager: only one full-screen panel can be active at a time.
+// Previously each modal had its own boolean state and they could overlap
+// (Sweep + Batch + Leaderboard all stacked, fighting for the backdrop and
+// the Esc-key) — that "chimera" feel the researchers complained about.
+// Centralising the state here also makes Esc-to-close trivial.
+type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | null;
+
 function AppShell() {
   const [viewMode, setViewMode] = useState<ViewMode>("STATE");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [sweepOpen, setSweepOpen] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
-  const [autoModeOpen, setAutoModeOpen] = useState(false);
-  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [activeModal, setActiveModal] = useState<ActiveModal>(null);
+  const closeModal = useCallback(() => setActiveModal(null), []);
+
+  // Esc closes whatever modal / drawer is open. One handler beats four
+  // independent useEffects per modal.
+  useEffect(() => {
+    if (!activeModal && !drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setActiveModal(null);
+        setDrawerOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeModal, drawerOpen]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [activeRun, setActiveRun] = useState<RunDetail | null>(null);
@@ -236,10 +255,10 @@ function AppShell() {
         onExportCSV={handleExportCSV}
         onExportJSON={handleExportJSON}
         onExportTable={handleExportTable}
-        onOpenSweep={() => setSweepOpen(true)}
-        onOpenBatch={() => setBatchOpen(true)}
-        onOpenAutoMode={() => setAutoModeOpen(true)}
-        onOpenLeaderboard={() => setLeaderboardOpen(true)}
+        onOpenSweep={() => setActiveModal("sweep")}
+        onOpenBatch={() => setActiveModal("batch")}
+        onOpenAutoMode={() => setActiveModal("automode")}
+        onOpenLeaderboard={() => setActiveModal("leaderboard")}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
         canExport={!!activeRun}
@@ -313,12 +332,16 @@ function AppShell() {
 
       <Footer />
 
-      <SweepPanel open={sweepOpen} onClose={() => setSweepOpen(false)} />
-      <BatchPanel open={batchOpen} onClose={() => setBatchOpen(false)} groups={groups} />
-      <AutoModePanel open={autoModeOpen} onClose={() => setAutoModeOpen(false)} />
+      <SweepPanel open={activeModal === "sweep"} onClose={closeModal} />
+      <BatchPanel
+        open={activeModal === "batch"}
+        onClose={closeModal}
+        groups={groups}
+      />
+      <AutoModePanel open={activeModal === "automode"} onClose={closeModal} />
       <LeaderboardPanel
-        open={leaderboardOpen}
-        onClose={() => setLeaderboardOpen(false)}
+        open={activeModal === "leaderboard"}
+        onClose={closeModal}
       />
 
       {drawerOpen && (

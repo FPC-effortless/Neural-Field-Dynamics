@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Panel, Pill } from "./Panel";
 import { PHCOL } from "../lib/colors";
 import type { RunSummary } from "../lib/api";
+import { fmtDur } from "../lib/format";
 
 interface RunsListProps {
   runs: RunSummary[];
@@ -18,13 +19,9 @@ const STATUS_COLOR: Record<string, string> = {
   error: "#ff4488",
 };
 
-function fmtTime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${m}m${sec}s`;
-}
+// Aliased so the rest of the file reads naturally — same behaviour as
+// the previous local fmtTime() but NaN/Infinity-safe.
+const fmtTime = fmtDur;
 
 export const RunsList = memo(function RunsList({
   runs,

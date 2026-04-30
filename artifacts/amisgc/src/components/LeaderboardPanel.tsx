@@ -7,6 +7,7 @@ import {
   type BaselineRecord,
   type LeaderboardRow,
 } from "../lib/api";
+import { fmt, fmtPct } from "../lib/format";
 
 interface LeaderboardPanelProps {
   open: boolean;
@@ -23,17 +24,10 @@ type SortKey =
   | "ciWidth"
   | "delta";
 
-const fmt = (v: number | null | undefined, p = 3): string => {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 100) return v.toFixed(1);
-  if (Math.abs(v) >= 10) return v.toFixed(2);
-  return v.toFixed(p);
-};
-
-const fmtPct = (v: number): string => `${(v * 100).toFixed(0)}%`;
-
-const fmtTs = (t: number): string => {
-  if (!t) return "—";
+// Local formatter — leaderboard rows want full date + time (different
+// from the time-only fmtTs in lib/format that the live panels use).
+const fmtTs = (t: number | null | undefined): string => {
+  if (!t || !Number.isFinite(t)) return "—";
   const d = new Date(t);
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 };

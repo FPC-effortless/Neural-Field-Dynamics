@@ -108,6 +108,28 @@ UI surfaces:
 
 The clamp range (`9 – 102 400`) is enforced both in the core (`paramsForNeurons`) and in the API server (`clampNeurons`), so any client supplying out-of-range values gets sane defaults instead of an error.
 
+### Production-readiness pass (April 2026)
+
+A focused review/cleanup landed alongside the cancellation work to harden the API + simulator and unify the UI:
+
+**Backend — `artifacts/api-server/`**
+
+- `lib/atomicWrite.ts` (new) — `writeFileAtomicSync(path, data)` writes to a per-process tmp sibling and `rename`s. POSIX guarantees rename atomicity, so a crash mid-write can never corrupt `data/runs/*.json`, `data/sweeps/*.json`, `data/batches/*.json`, `data/automode/*.json`, `data/notes.json`, `data/baselines.json`, or `data/phase-status.json` again. Used by `store.ts`, `phaseLockStore.ts`, `notesStore.ts` (via `JsonSingletonStore.save`), and the three `persist{Sweep,Batch,AutoMode}` helpers in `routes/runs.ts`.
+- `routes/runs.ts` — `sanitizeCustomParams` and `sanitizeRanges` filter every payload `customParams`, `ranges`, and `baseRanges` object: only string keys ≤ 64 chars, only `boolean` or finite-number values, ranges capped at 16 numeric entries per axis. `NaN`, `Infinity`, strings, nested objects, and unknown shapes are silently dropped before they ever reach the simulator's math layer or get persisted.
+- `routes/runs.ts` — SSE heartbeat lifecycle is now centralised. `installHeartbeat(res)` stashes the 15 s timer on the response object (`res.__heartbeat`); `stopHeartbeat(res)` is called from both the per-client `req.on("close")` path and the orchestrator's "all done" path via `endAllSubscribers(subs)`. Earlier the orchestrator only called `sub.end()` and forgot the timer, leaking one timer per finished run/sweep/batch/automode subscriber.
+- The single-run path now threads `body.seed` into `runArcBenchmark` so ARC probe inputs are reproducible across reruns.
+
+**Simulator core — `lib/amisgc-core/`**
+
+- `sim.ts` — `SimContext` carries two reusable scratch buffers (`scratchExpV: Float32Array(N)`, `scratchCB: Float32Array(B)`) sized once at `createSim`. The three per-tick `new Array(B)` / `new Float32Array(N)` allocations inside `simTick` (`PASS 1` branch coincidence count + both `PASS 2` softmax workspaces) now reuse them — at `N = 81 000` and `ATT_ITERS = 3` this eliminated ≈1.6 MB of GC pressure per tick.
+- `arc.ts` — replaced `Math.random()` in the probe-input generator with a seeded `mulberry32(ctx.seed ^ 0x9e3779b9)` instance, so the whole ARC benchmark is now bit-identical for a given run seed. Added `ArcOptions.seed` and propagated it into `createSim`.
+
+**Web UI — `artifacts/amisgc/`**
+
+- `src/lib/format.ts` (new) — single source of truth for `fmt(v, precision)`, `fmtPct(v, decimals)`, `fmtDur(ms)`, `fmtTs(ms)`, and `parseNumOr(raw, fallback)`. Six panels (`SweepPanel`, `BatchPanel`, `LeaderboardPanel`, `AutoModePanel`, `MetricsPanel`, `RunsList`) each used to ship their own near-duplicate version with subtly different rules (some treated `null` as 0, some at 3 decimals vs 2). They now all import from `lib/format`. `LeaderboardPanel` and `AutoModePanel` retain their own custom timestamp formatters since they need different presentations (full date+time vs UTC HH:MM:SS).
+- `src/App.tsx` — the four `*Open` booleans (`sweepOpen`, `batchOpen`, `autoModeOpen`, `leaderboardOpen`) are collapsed into a single `activeModal: "sweep" | "batch" | "automode" | "leaderboard" | null` state. Only one full-screen panel can be open at a time, and a single `Esc` key handler closes whatever's open (or the mobile drawer). Fixes the long-standing "chimera" feel where multiple modals could overlap and fight for the backdrop.
+- `SweepPanel`'s neuron / topK input parsing now goes through `parseNumOr(...)`; previously a typo'd `"abc"` silently became `NaN` and was sent over the wire.
+
 ### Cancellation latency (April 2026)
 
 Earlier, the simulator only yielded to the event loop every `sampleEvery × 4` ticks (default 800), and only inside the sample-emit block. With heavy grids (`scale=81 000`, N≈81k) a single `simTick` is non-trivial, so the loop could block the Node.js event loop for many seconds — during which `DELETE /api/runs/:id`, `/api/sweeps/:id`, `/api/batches/:id`, and `/api/automode/:id` couldn't even be processed and SSE streams froze. Cancellation appeared "stuck" until the next yield. The ARC benchmark was worse: its training and probe inner loops had **no `await` at all**, so cancel could not propagate until the active task finished.

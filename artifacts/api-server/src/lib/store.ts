@@ -2,11 +2,11 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  writeFileSync,
   unlinkSync,
   existsSync,
 } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomicSync } from "./atomicWrite.js";
 
 export interface JsonFileStoreOptions {
   baseDir: string;
@@ -25,15 +25,10 @@ export class JsonFileStore<T extends { id: string }> {
   }
 
   put(rec: T): void {
-    try {
-      writeFileSync(
-        join(this.dir, `${rec.id}.json`),
-        JSON.stringify(rec, null, 2),
-        "utf8",
-      );
-    } catch {
-      /* best-effort */
-    }
+    writeFileAtomicSync(
+      join(this.dir, `${rec.id}.json`),
+      JSON.stringify(rec, null, 2),
+    );
   }
 
   get(id: string): T | null {
@@ -98,11 +93,7 @@ export class JsonSingletonStore<T> {
   }
 
   save(value: T): void {
-    try {
-      writeFileSync(this.path, JSON.stringify(value, null, 2), "utf8");
-    } catch {
-      /* best-effort */
-    }
+    writeFileAtomicSync(this.path, JSON.stringify(value, null, 2));
   }
 }
 

@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findExperiment } from "@workspace/amisgc-core";
 import { DATA_DIR } from "./store.js";
+import { writeFileAtomicSync } from "./atomicWrite.js";
 
 // v13 spec §3.2: every phase above PH0 is LOCKED until the Existence Gate
 // (Φ>0.05 ∧ PU>0.1 ∧ S_C>0.1) has held continuously for ≥ 1000 ticks in at
@@ -60,12 +61,9 @@ function load(): PhaseLockState {
 }
 
 function save(state: PhaseLockState): void {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify(state, null, 2), "utf8");
-  } catch {
-    /* best-effort */
-  }
+  // writeFileAtomicSync handles mkdir + atomic rename, so a crash during
+  // the write can never leave a corrupted phase-status.json behind.
+  writeFileAtomicSync(FILE, JSON.stringify(state, null, 2));
 }
 
 let cache: PhaseLockState = load();

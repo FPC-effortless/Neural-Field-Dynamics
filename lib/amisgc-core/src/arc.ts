@@ -2,6 +2,7 @@
 import { TRANSFORMS, type Transform, makeArcTask } from "./tasks.js";
 import { createSim, simTick, calcStats, setTask } from "./sim.js";
 import { defaultParams, paramsForNeurons } from "./params.js";
+import { mulberry32 } from "./math.js";
 import type { Stats } from "./types.js";
 
 export interface ArcSample {
@@ -46,6 +47,10 @@ export interface ArcOptions {
   transforms?: string[];
   onProgress?: (done: number, total: number, current?: ArcSample) => void;
   signal?: { cancelled: boolean };
+  // Optional seed for the probe-input RNG. Without this, identical runs
+  // produce different probe sequences and the benchmark is non-reproducible.
+  // Default: derived from the same seed used to build the underlying sim.
+  seed?: number;
 }
 
 // Wall-clock yield interval (mirrors runner.ts). Without this the ARC inner
@@ -72,7 +77,16 @@ export async function runArcBenchmark(
     typeof neurons === "number" && Number.isFinite(neurons)
       ? paramsForNeurons(neurons)
       : defaultParams(scale);
-  const { sim, ctx } = createSim(params);
+  const { sim, ctx } = createSim(
+    params,
+    typeof opts.seed === "number" && Number.isFinite(opts.seed)
+      ? { seed: Math.floor(opts.seed) >>> 0 }
+      : {},
+  );
+  // Dedicated RNG for the probe inputs. Derived from ctx.seed so the whole
+  // benchmark is fully reproducible from a single seed; previously this used
+  // Math.random() which made identical runs produce different probe bits.
+  const probeRng = mulberry32((ctx.seed ^ 0x9e3779b9) >>> 0);
 
   const samples: ArcSample[] = [];
   let correct = 0;
@@ -109,7 +123,7 @@ export async function runArcBenchmark(
     for (let k = 0; k < testInputs; k++) {
       if (signal?.cancelled) break;
       const input: number[] = [];
-      for (let j = 0; j < 8; j++) input.push(Math.random() < 0.5 ? 0 : 1);
+      for (let j = 0; j < 8; j++) input.push(probeRng() < 0.5 ? 0 : 1);
       const expected = transform(input);
 
       // Run the system on a probe sequence and read out a prediction

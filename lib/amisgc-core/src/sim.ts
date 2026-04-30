@@ -24,6 +24,13 @@ export interface SimContext {
   phiPairs: Array<[number, number]>;
   rng: () => number;
   seed: number;
+  // Per-tick scratch buffers — sized once at createSim and reused on every
+  // tick to avoid 3+ allocations per tick (~1.6 MB GC pressure / tick at
+  // N = 81 000). They are *not* part of the simulator state and must be
+  // treated as ephemeral; any reader has to copy out values it wants to
+  // retain before the next tick.
+  scratchExpV: Float32Array; // length N — softmax workspace (PASS 2)
+  scratchCB: Float32Array;   // length B — per-branch coincidence count (PASS 1)
 }
 
 export interface CreateSimOptions {
@@ -236,6 +243,8 @@ export function createSim(
     phiPairs: makePhiPairs(N, rng),
     rng,
     seed,
+    scratchExpV: new Float32Array(N),
+    scratchCB: new Float32Array(B),
   };
 
   return { sim, ctx };
@@ -364,8 +373,14 @@ export function simTick(sim: SimState, ctx: SimContext): number {
       }
     } else {
       const V_b = n.branch_out;
-      for (let b = 0; b < B; b++) V_b[b] = 0;
-      const C_b = new Array(B).fill(0);
+      // Reuse the per-tick scratch buffer (length B) instead of allocating
+      // a fresh Array on every neuron — at N=81 000 this avoids ~81k small
+      // allocations per tick. The buffer is owned by ctx and reset here.
+      const C_b = ctx.scratchCB;
+      for (let b = 0; b < B; b++) {
+        V_b[b] = 0;
+        C_b[b] = 0;
+      }
       const srcs = n.sources;
       for (let si = 0; si < srcs.length; si++) {
         const src = ns[srcs[si] as number] as Neuron;
@@ -415,7 +430,10 @@ export function simTick(sim: SimState, ctx: SimContext): number {
         if (a > maxA) maxA = a;
       }
       const tau = Math.max(1e-3, P.TAU_ATT);
-      const expV = new Float32Array(N);
+      // Reuse ctx.scratchExpV (length N) instead of allocating a fresh
+      // Float32Array of N floats per attractor iteration. At N=81 000 and
+      // ATT_ITERS=3 this saved ~972 KB/tick of GC pressure.
+      const expV = ctx.scratchExpV;
       let sumE = 0;
       for (let i = 0; i < N; i++) {
         expV[i] = Math.exp(((ns[i] as Neuron).a - maxA) / tau);
@@ -493,7 +511,8 @@ export function simTick(sim: SimState, ctx: SimContext): number {
         const ss = (ns[i] as Neuron).s_soma;
         if (ss > maxS) maxS = ss;
       }
-      const expV = new Float32Array(N);
+      // Reuse the same scratch buffer in the legacy top-K path.
+      const expV = ctx.scratchExpV;
       let sumE = 0;
       for (let i = 0; i < N; i++) {
         expV[i] = Math.exp(P.BETA_A * ((ns[i] as Neuron).s_soma - maxS));

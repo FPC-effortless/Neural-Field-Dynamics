@@ -10,28 +10,13 @@ import {
   type DiffResponse,
   type PhaseGroup,
 } from "../lib/api";
+import { fmt, fmtDur } from "../lib/format";
 
 interface BatchPanelProps {
   open: boolean;
   onClose: () => void;
   groups?: PhaseGroup[];
 }
-
-const fmt = (v: number | null | undefined, p = 3): string => {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 100) return v.toFixed(1);
-  if (Math.abs(v) >= 10) return v.toFixed(2);
-  return v.toFixed(p);
-};
-
-const fmtDur = (ms: number): string => {
-  if (!ms || ms < 0) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 100) / 10;
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m${Math.round(s - m * 60)}s`;
-};
 
 function statusColor(status: BatchItem["status"], passed: boolean): string {
   if (status === "running") return "#ffb040";
