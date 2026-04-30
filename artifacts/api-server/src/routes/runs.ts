@@ -1990,6 +1990,12 @@ interface AutoModeRecord {
   bestComboIndex: number;
   bestParams: Record<string, number | boolean | string> | null;
   bestGateStreak: number;
+  // Highest CAR observed across every iteration's best combo. Used as the
+  // tiebreaker when two iterations hit the same gate streak — without it,
+  // the orchestrator would compare against the wrong reference (the prior
+  // iteration's CAR rather than the running global maximum) and could
+  // overwrite a genuinely-better winner with a later, weaker one.
+  bestCAR: number;
   passed: boolean;
   cancelled: boolean;
   subscribers: Set<Response>;
@@ -2024,6 +2030,7 @@ function serializeAutoMode(a: AutoModeRecord) {
     bestComboIndex: a.bestComboIndex,
     bestParams: a.bestParams,
     bestGateStreak: a.bestGateStreak,
+    bestCAR: a.bestCAR,
     passed: a.passed,
     iterations: a.iterations,
   };
@@ -2079,6 +2086,7 @@ function loadPersistedAutoModes(): void {
         bestComboIndex: data.bestComboIndex ?? -1,
         bestParams: data.bestParams ?? null,
         bestGateStreak: data.bestGateStreak ?? 0,
+        bestCAR: (data as { bestCAR?: number }).bestCAR ?? 0,
         passed: data.passed ?? false,
         cancelled: reloadStatus === "cancelled",
         subscribers: new Set(),
@@ -2323,6 +2331,7 @@ router.post("/automode", (req, res) => {
     bestComboIndex: -1,
     bestParams: null,
     bestGateStreak: 0,
+    bestCAR: 0,
     passed: false,
     cancelled: false,
     subscribers: new Set(),
@@ -2339,20 +2348,22 @@ router.post("/automode", (req, res) => {
         if (record.cancelled) break;
         record.currentIteration = i;
         const it = await runAutoModeIteration(record, i, nextRanges);
-        // Update global best if this iteration's best beats prior best.
-        if (
-          it.bestGateStreak > record.bestGateStreak ||
-          (it.bestGateStreak === record.bestGateStreak &&
-            it.bestCAR > 0 &&
-            (!record.bestParams ||
-              it.bestCAR >
-                (record.iterations[record.iterations.length - 2]?.bestCAR ??
-                  0)))
-        ) {
+        // Update global best if this iteration's best beats the running
+        // global best. Primary key is gate streak (closer to the v13 target);
+        // CAR is the tiebreaker. We compare against `record.bestCAR` — the
+        // running max across every prior iteration — not against any
+        // single previous iteration, which would let a weaker later run
+        // overwrite a genuinely-better earlier winner.
+        const beatsStreak = it.bestGateStreak > record.bestGateStreak;
+        const tiesStreakWithBetterCAR =
+          it.bestGateStreak === record.bestGateStreak &&
+          it.bestCAR > record.bestCAR;
+        if (!record.bestParams || beatsStreak || tiesStreakWithBetterCAR) {
           record.bestSweepId = it.sweepId;
           record.bestComboIndex = it.bestComboIndex;
           record.bestParams = it.bestParams;
           record.bestGateStreak = it.bestGateStreak;
+          record.bestCAR = it.bestCAR;
         }
         persistAutoMode(record);
         broadcastAutoMode(record, "iteration_complete", {

@@ -99,6 +99,16 @@ function fmtStats(s: Stats): string {
   ].join(" ");
 }
 
+let activeRunCancel: (() => void) | null = null;
+process.on("SIGINT", () => {
+  if (activeRunCancel) {
+    activeRunCancel();
+    console.log(color("\n^C — cancelling run", "red"));
+  } else {
+    process.exit(130);
+  }
+});
+
 async function runOne(experimentId: string, scale: ScaleKey, ticks?: number): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
     let lastSampleAt = 0;
@@ -132,17 +142,16 @@ async function runOne(experimentId: string, scale: ScaleKey, ticks?: number): Pr
         console.log(
           `  ${verdict}  ${color(`${final.metric}=${(final.measured ?? 0).toFixed(3)} / ${final.target}`, "yellow")}  ${color(`${(final.durationMs / 1000).toFixed(1)}s`, "dim")}`,
         );
+        activeRunCancel = null;
         resolve(final.passed);
       },
       onError: (err: Error) => {
         console.error(color(`  ! error: ${err.message}`, "red"));
+        activeRunCancel = null;
         reject(err);
       },
     });
-    process.on("SIGINT", () => {
-      handle.cancel();
-      console.log(color("\n^C — cancelling run", "red"));
-    });
+    activeRunCancel = handle.cancel;
   });
 }
 

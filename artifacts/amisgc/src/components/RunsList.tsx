@@ -29,8 +29,9 @@ export const RunsList = memo(function RunsList({
   onSelect,
   onCancel,
 }: RunsListProps) {
-  // Show newest first, capped at 30 so the list never grows unbounded
-  const sorted = [...runs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 30);
+  // Show newest first, capped to match the server's MAX_RUNS (50) so every
+  // run the API still remembers is reachable from the UI.
+  const sorted = [...runs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 50);
   return (
     <Panel title="LIVE RUNS" accent="#0f4a3a">
       <div
