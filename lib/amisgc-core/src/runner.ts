@@ -145,6 +145,32 @@ export function startRun(opts: RunOptions = {}): RunHandle {
     // Cycle through tasks naturally; advanceTask runs internally based on TASK_TICKS
     setTask(sim, "COPY");
 
+    // Yield to the event loop before the first simTick so that:
+    //   (a) the HTTP handler that called startRun() can send its response
+    //       immediately (instead of being blocked for up to YIELD_INTERVAL_MS),
+    //   (b) any cancel signal that arrived concurrently is visible before the
+    //       very first tick executes.
+    await new Promise<void>((r) => setImmediate(r));
+    if (signal.cancelled) {
+      const stats = calcStats(sim, ctx);
+      opts.onComplete?.({
+        t: sim.t,
+        stats,
+        passed: false,
+        attractorCount: sim.attractorLibrary.length,
+        durationMs: Date.now() - startTime,
+        seed,
+      });
+      return {
+        t: sim.t,
+        stats,
+        passed: false,
+        attractorCount: sim.attractorLibrary.length,
+        durationMs: Date.now() - startTime,
+        seed,
+      };
+    }
+
     let lastYieldAt = Date.now();
     // Single try/catch covers BOTH the inner tick loop AND the post-loop
     // tail (calcStats, result construction, onComplete). If anything in the

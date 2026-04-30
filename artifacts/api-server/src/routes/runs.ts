@@ -398,22 +398,26 @@ router.post("/runs", (req, res) => {
     })
       .then((result) => {
         record.arcResult = result;
-        record.status = signal.cancelled ? "cancelled" : "completed";
         record.completedAt = Date.now();
         record.latestStats = result.finalStats;
         record.passed = result.solveRate >= 0.5;
         record.measured = result.solveRate;
         record.target = 0.5;
         record.metric = "solveRate";
-        broadcast(record, "complete", {
-          id,
-          result: {
-            solveRate: result.solveRate,
-            correct: result.correct,
-            total: result.total,
-            finalStats: result.finalStats,
-          },
-        });
+        if (!signal.cancelled) {
+          record.status = "completed";
+          broadcast(record, "complete", {
+            id,
+            result: {
+              solveRate: result.solveRate,
+              correct: result.correct,
+              total: result.total,
+              finalStats: result.finalStats,
+            },
+          });
+        } else {
+          record.status = "cancelled";
+        }
         endAllSubscribers(record.subscribers);
       })
       .catch((err) => {
@@ -478,6 +482,7 @@ router.post("/runs", (req, res) => {
       record.error = err.message;
       record.completedAt = Date.now();
       broadcast(record, "error", { message: err.message });
+      endAllSubscribers(record.subscribers);
     },
   });
   record.cancel = () => {

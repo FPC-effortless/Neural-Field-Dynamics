@@ -745,14 +745,16 @@ export function subscribeBatch(id: string, handlers: BatchHandlers): () => void 
     "item_complete",
     handlers.onItemComplete,
   );
-  sse.addEventListener("batch_complete", (ev: MessageEvent) => {
+  const onBatchTerminal = (ev: MessageEvent) => {
     try {
       handlers.onBatchComplete?.(JSON.parse(ev.data) as BatchDetail);
     } catch {
       /* ignore */
     }
     sse.close();
-  });
+  };
+  sse.addEventListener("batch_complete", onBatchTerminal);
+  sse.addEventListener("batch_cancelled", onBatchTerminal);
   return () => sse.close();
 }
 

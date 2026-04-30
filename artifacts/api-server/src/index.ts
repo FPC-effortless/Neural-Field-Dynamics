@@ -45,3 +45,13 @@ function shutdown(signal: string): void {
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Keep the process alive on unexpected errors. Individual run/sweep/batch
+// promises all have their own .catch() handlers; these backstops are for
+// anything that slips through (e.g. a third-party callback that throws).
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "uncaughtException — continuing");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "unhandledRejection — continuing");
+});
