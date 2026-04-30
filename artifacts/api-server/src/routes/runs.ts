@@ -850,7 +850,28 @@ async function runSweepCombo(
       },
     });
     record.cancel = () => handle.cancel();
-    handle.promise.catch(() => undefined);
+    // Safety net: if the runner promise settles abnormally (e.g. a future
+    // bug causes neither onComplete nor onError to fire), we still resolve
+    // the combo so the orchestrator's for-loop can advance instead of
+    // deadlocking. resolve() is idempotent — extra calls are no-ops.
+    handle.promise
+      .catch((err: unknown) => {
+        if (record.status === "running" || record.status === "pending") {
+          record.status = "error";
+          record.error = err instanceof Error ? err.message : String(err);
+          record.completedAt = Date.now();
+        }
+        if (combo.status === "running" || combo.status === "pending") {
+          combo.status = "completed";
+          persistSweep(s);
+          broadcastSweep(s, "combo_complete", {
+            sweepId: s.id,
+            combo,
+            bestIndex: s.bestIndex,
+          });
+        }
+      })
+      .finally(() => resolve());
   });
 }
 

@@ -701,14 +701,21 @@ export function subscribeSweep(id: string, handlers: SweepHandlers): () => void 
     "combo_complete",
     handlers.onComboComplete,
   );
-  es.addEventListener("sweep_complete", (ev: MessageEvent) => {
+  // Treat `sweep_cancelled` as a terminal event equivalent to
+  // `sweep_complete`: the server emits it the moment a DELETE arrives so
+  // the UI can flip to "cancelled" immediately, instead of waiting for the
+  // orchestrator to unwind out of the in-flight simTick (which can take
+  // many seconds at large N).
+  const onTerminal = (ev: MessageEvent) => {
     try {
       handlers.onSweepComplete?.(JSON.parse(ev.data) as SweepDetail);
     } catch {
       /* ignore */
     }
     es.close();
-  });
+  };
+  es.addEventListener("sweep_complete", onTerminal);
+  es.addEventListener("sweep_cancelled", onTerminal);
   es.addEventListener("error", () => handlers.onError?.("stream error"));
   return () => es.close();
 }
@@ -851,14 +858,20 @@ export function subscribeAutoMode(
     bestParams: Record<string, number | boolean | string> | null;
     bestGateStreak: number;
   }>("iteration_complete", handlers.onIterationComplete);
-  es.addEventListener("automode_complete", (ev: MessageEvent) => {
+  // Same terminal-event treatment as sweep streams: `automode_cancelled`
+  // is emitted instantly on DELETE so the UI flips to "cancelled" right
+  // away even while the orchestrator is still finishing the simTick that
+  // was in flight when the user clicked Cancel.
+  const onTerminal = (ev: MessageEvent) => {
     try {
       handlers.onAutoModeComplete?.(JSON.parse(ev.data) as AutoModeDetail);
     } catch {
       /* ignore */
     }
     es.close();
-  });
+  };
+  es.addEventListener("automode_complete", onTerminal);
+  es.addEventListener("automode_cancelled", onTerminal);
   es.addEventListener("error", () => handlers.onError?.("stream error"));
   return () => es.close();
 }

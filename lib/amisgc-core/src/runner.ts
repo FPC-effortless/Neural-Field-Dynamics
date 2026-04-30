@@ -146,6 +146,13 @@ export function startRun(opts: RunOptions = {}): RunHandle {
     setTask(sim, "COPY");
 
     let lastYieldAt = Date.now();
+    // Single try/catch covers BOTH the inner tick loop AND the post-loop
+    // tail (calcStats, result construction, onComplete). If anything in the
+    // tail throws — e.g. a malformed stat blowing up stabilityCheck, or a
+    // bug inside the user's onComplete callback — onError MUST fire so the
+    // outer caller's promise can settle. Otherwise sweep / auto-mode
+    // orchestrators that resolve only inside onComplete/onError would hang
+    // forever on that combo and freeze the whole run.
     try {
       for (let i = 0; i < ticks; i++) {
         if (signal.cancelled) break;
@@ -183,46 +190,50 @@ export function startRun(opts: RunOptions = {}): RunHandle {
           lastYieldAt = Date.now();
         }
       }
+
+      const stats = calcStats(sim, ctx);
+      let passed = !signal.cancelled;
+      let measured: number | undefined;
+      if (exp) {
+        measured = (stats as unknown as Record<string, number>)[exp.metric];
+        if (
+          !signal.cancelled &&
+          typeof measured === "number" &&
+          !Number.isNaN(measured)
+        ) {
+          passed =
+            exp.targetDir === 1
+              ? measured >= exp.targetVal
+              : measured <= exp.targetVal;
+        } else {
+          passed = false;
+        }
+        if (typeof measured === "number" && Number.isFinite(measured)) {
+          // Make sure the final point is in the series for accurate stability.
+          const last = metricSeries[metricSeries.length - 1];
+          if (!last || last.t !== sim.t) metricSeries.push({ t: sim.t, v: measured });
+        }
+      }
+      const stability =
+        metricSeries.length >= 4 ? stabilityCheck(metricSeries) : undefined;
+      const result: RunCompleteEvent = {
+        t: sim.t,
+        stats,
+        passed,
+        ...(exp ? { hypothesis: exp.hypothesis, metric: exp.metric, target: exp.targetVal } : {}),
+        ...(measured !== undefined ? { measured } : {}),
+        attractorCount: sim.attractorLibrary.length,
+        durationMs: Date.now() - startTime,
+        seed,
+        ...(metricSeries.length > 0 ? { metricSeries } : {}),
+        ...(stability ? { stability } : {}),
+      };
+      opts.onComplete?.(result);
+      return result;
     } catch (err) {
       opts.onError?.(err as Error);
       throw err;
     }
-
-    const stats = calcStats(sim, ctx);
-    let passed = true;
-    let measured: number | undefined;
-    if (exp) {
-      measured = (stats as unknown as Record<string, number>)[exp.metric];
-      if (typeof measured === "number" && !Number.isNaN(measured)) {
-        passed =
-          exp.targetDir === 1
-            ? measured >= exp.targetVal
-            : measured <= exp.targetVal;
-      } else {
-        passed = false;
-      }
-      if (typeof measured === "number" && Number.isFinite(measured)) {
-        // Make sure the final point is in the series for accurate stability.
-        const last = metricSeries[metricSeries.length - 1];
-        if (!last || last.t !== sim.t) metricSeries.push({ t: sim.t, v: measured });
-      }
-    }
-    const stability =
-      metricSeries.length >= 4 ? stabilityCheck(metricSeries) : undefined;
-    const result: RunCompleteEvent = {
-      t: sim.t,
-      stats,
-      passed,
-      ...(exp ? { hypothesis: exp.hypothesis, metric: exp.metric, target: exp.targetVal } : {}),
-      ...(measured !== undefined ? { measured } : {}),
-      attractorCount: sim.attractorLibrary.length,
-      durationMs: Date.now() - startTime,
-      seed,
-      ...(metricSeries.length > 0 ? { metricSeries } : {}),
-      ...(stability ? { stability } : {}),
-    };
-    opts.onComplete?.(result);
-    return result;
   })();
 
   return { promise, cancel, signal };
