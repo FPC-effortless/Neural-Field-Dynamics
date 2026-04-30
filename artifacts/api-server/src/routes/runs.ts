@@ -28,6 +28,7 @@ import {
   resetPhaseStatus,
   PHASE_LOCK_GATE_STREAK_REQUIRED,
 } from "../lib/phaseLockStore.js";
+import { updateGlobalBest } from "../lib/automodeBest.js";
 
 interface RunRecord {
   id: string;
@@ -2348,23 +2349,29 @@ router.post("/automode", (req, res) => {
         if (record.cancelled) break;
         record.currentIteration = i;
         const it = await runAutoModeIteration(record, i, nextRanges);
-        // Update global best if this iteration's best beats the running
-        // global best. Primary key is gate streak (closer to the v13 target);
-        // CAR is the tiebreaker. We compare against `record.bestCAR` — the
-        // running max across every prior iteration — not against any
-        // single previous iteration, which would let a weaker later run
-        // overwrite a genuinely-better earlier winner.
-        const beatsStreak = it.bestGateStreak > record.bestGateStreak;
-        const tiesStreakWithBetterCAR =
-          it.bestGateStreak === record.bestGateStreak &&
-          it.bestCAR > record.bestCAR;
-        if (!record.bestParams || beatsStreak || tiesStreakWithBetterCAR) {
-          record.bestSweepId = it.sweepId;
-          record.bestComboIndex = it.bestComboIndex;
-          record.bestParams = it.bestParams;
-          record.bestGateStreak = it.bestGateStreak;
-          record.bestCAR = it.bestCAR;
-        }
+        // Pure helper picks the running global best with gate streak as
+        // primary key and CAR as tiebreaker. See lib/automodeBest.ts.
+        const merged = updateGlobalBest(
+          {
+            bestSweepId: record.bestSweepId,
+            bestComboIndex: record.bestComboIndex,
+            bestParams: record.bestParams,
+            bestGateStreak: record.bestGateStreak,
+            bestCAR: record.bestCAR,
+          },
+          {
+            sweepId: it.sweepId,
+            bestComboIndex: it.bestComboIndex,
+            bestParams: it.bestParams,
+            bestGateStreak: it.bestGateStreak,
+            bestCAR: it.bestCAR,
+          },
+        );
+        record.bestSweepId = merged.bestSweepId;
+        record.bestComboIndex = merged.bestComboIndex;
+        record.bestParams = merged.bestParams;
+        record.bestGateStreak = merged.bestGateStreak;
+        record.bestCAR = merged.bestCAR;
         persistAutoMode(record);
         broadcastAutoMode(record, "iteration_complete", {
           autoModeId: record.id,
