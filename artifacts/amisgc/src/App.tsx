@@ -14,6 +14,10 @@ import { PhaseLockBanner } from "./components/PhaseLockBanner";
 import { LabHome } from "./components/LabHome";
 import { HypothesisPanel } from "./components/HypothesisPanel";
 import { BiologicalPlausibilityPanel } from "./components/BiologicalPlausibilityPanel";
+import { SweetSpotPanel } from "./components/SweetSpotPanel";
+import { AbstractionPanel } from "./components/AbstractionPanel";
+import { CodeGenPanel } from "./components/CodeGenPanel";
+import { BenchmarkPanel } from "./components/BenchmarkPanel";
 import {
   api,
   autoModeApi,
@@ -69,7 +73,7 @@ function pushSeries(prev: Record<string, number[]>, stats: Stats): Record<string
 // (Sweep + Batch + Leaderboard all stacked, fighting for the backdrop and
 // the Esc-key) — that "chimera" feel the researchers complained about.
 // Centralising the state here also makes Esc-to-close trivial.
-type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | "hypothesis" | null;
+type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | "hypothesis" | "sweetspot" | "abstraction" | "codegen" | "benchmark" | null;
 
 type SurfaceMode = "LAB" | "ADVANCED";
 const SURFACE_KEY = "amisgc.surfaceMode";
@@ -338,6 +342,10 @@ function AppShell() {
         onOpenAutoMode={() => setActiveModal("automode")}
         onOpenLeaderboard={() => setActiveModal("leaderboard")}
         onOpenHypothesis={() => setActiveModal("hypothesis")}
+        onOpenSweetSpot={() => setActiveModal("sweetspot")}
+        onOpenAbstraction={() => setActiveModal("abstraction")}
+        onOpenCodeGen={() => setActiveModal("codegen")}
+        onOpenBenchmark={() => setActiveModal("benchmark")}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
         canExport={!!activeRun}
@@ -455,6 +463,23 @@ function AppShell() {
         onClose={closeModal}
         onStarted={(id) => { setWatchedAutoModeId(id); setSurfaceMode("LAB"); closeModal(); }}
       />
+      <SweetSpotPanel
+        open={activeModal === "sweetspot"}
+        onClose={closeModal}
+      />
+      <AbstractionPanel
+        open={activeModal === "abstraction"}
+        onClose={closeModal}
+        onStarted={(id) => { setWatchedAutoModeId(id); setSurfaceMode("LAB"); closeModal(); }}
+      />
+      <CodeGenPanel
+        open={activeModal === "codegen"}
+        onClose={closeModal}
+      />
+      <BenchmarkPanel
+        open={activeModal === "benchmark"}
+        onClose={closeModal}
+      />
 
       {drawerOpen && (
         <div className="mobile-drawer">
@@ -507,6 +532,10 @@ interface HeaderProps {
   onOpenAutoMode: () => void;
   onOpenLeaderboard: () => void;
   onOpenHypothesis: () => void;
+  onOpenSweetSpot: () => void;
+  onOpenAbstraction: () => void;
+  onOpenCodeGen: () => void;
+  onOpenBenchmark: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
   canExport: boolean;
@@ -574,6 +603,10 @@ function Header({
   onOpenAutoMode,
   onOpenLeaderboard,
   onOpenHypothesis,
+  onOpenSweetSpot,
+  onOpenAbstraction,
+  onOpenCodeGen,
+  onOpenBenchmark,
   speed,
   onSpeedChange,
   canExport,
@@ -677,6 +710,37 @@ function Header({
             title="test the 7 emergent-specialisation hypotheses"
           >
             🧬 HYPOTHESES
+          </HeaderButton>
+
+          <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
+
+          <HeaderButton
+            onClick={onOpenSweetSpot}
+            color="#ffd060"
+            title="multi-objective Pareto-front sweet spot discovery"
+          >
+            ★ SWEET SPOT
+          </HeaderButton>
+          <HeaderButton
+            onClick={onOpenAbstraction}
+            color="#5a8aaa"
+            title="apply biological abstractions to scale experiments"
+          >
+            ⊞ ABSTRACT
+          </HeaderButton>
+          <HeaderButton
+            onClick={onOpenCodeGen}
+            color="#aa88ff"
+            title="generate CPU/GPU/neuromorphic Python code"
+          >
+            &lt;/&gt; CODE GEN
+          </HeaderButton>
+          <HeaderButton
+            onClick={onOpenBenchmark}
+            color="#3aaf6a"
+            title="compare AMISGC vs modular AI vs deep learning"
+          >
+            ◈ BENCHMARK
           </HeaderButton>
 
           <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />

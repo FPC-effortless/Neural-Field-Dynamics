@@ -1,9 +1,9 @@
 // Research hypotheses for the AMISGC emergent-specialisation research programme.
 //
 // Each hypothesis maps to a section of the refocused spec. Status codes:
-//   "testable"  — the current sim has all required parameters; run button enabled.
-//   "partial"   — a proxy sweep is possible now; full test needs a structural upgrade.
-//   "pending"   — requires a planned structural upgrade; no sweep possible yet.
+//   "testable"  -- the current sim has all required parameters; run button enabled.
+//   "partial"   -- a proxy sweep is possible now; full test needs a structural upgrade.
+//   "pending"   -- requires a planned structural upgrade; no sweep possible yet.
 //
 // sweepConfig (when present) is posted directly to POST /api/automode.
 
@@ -39,10 +39,10 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Can predictive coding and emergent attractors produce task specialisation without any pre-programmed task-specific modules?",
     testMethod:
-      "Run a Phase-0 parameter sweep. Measure attractor count and Phi. Gate I opening (Phi > 0.05, PU > 0.1, S_C > 0.1 sustained 1000 ticks) confirms global integration arose from local rules alone — no task-specific code involved.",
+      "Run a Phase-0 parameter sweep. Measure attractor count and Phi. Gate I opening (Phi > 0.05, PU > 0.1, S_C > 0.1 sustained 1000 ticks) confirms global integration arose from local rules alone -- no task-specific code involved.",
     primaryMetric: "Phi (global integration) + attractorCount",
     successCriteria: "Phi > 0.05 sustained for 1000 ticks; attractors > 0",
-    efficiencyTool: "None — this is the core AMISGC mechanism",
+    efficiencyTool: "None -- this is the core AMISGC mechanism",
     status: "testable",
     sweepConfig: {
       scale: 81,
@@ -64,7 +64,7 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Does raising the metabolic cost of firing (FIRE_COST) reduce attractor overlap and sharpen neuron specialisation?",
     testMethod:
-      "Sweep BETA_ENTROPY as a proxy for metabolic pressure — higher entropy weight penalises broad participation in a similar way to a metabolic cost. Measure participation rate (sparsity) and Phi across the sweep. A proxy confirmation: sparsity rises and Phi holds as beta increases.",
+      "Sweep BETA_ENTROPY as a proxy for metabolic pressure -- higher entropy weight penalises broad participation in a similar way to a metabolic cost. Measure participation rate (sparsity) and Phi across the sweep. A proxy confirmation: sparsity rises and Phi holds as beta increases.",
     primaryMetric: "Participation rate (sparsity) + Phi across beta values",
     successCriteria:
       "Sparsity increases toward 2-6% as BETA_ENTROPY rises; Phi remains > 0.05",
@@ -93,13 +93,27 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Does a simulated sharp-wave ripple (SWR) replay phase increase Phi and stabilise attractors after online learning?",
     testMethod:
-      "Compare Phi before and after a SWR offline-replay phase. Phi should increase by >= 10% post-SWR, indicating the replay compressed and strengthened the attractor landscape.",
-    primaryMetric: "Delta-Phi before vs. after SWR phase",
-    successCriteria: "Phi increases by >= 10% post-SWR consolidation",
+      "Proxy test: run auto-mode with 4 iterations (each iteration is a separate sweep) and a long streak target (2000 ticks). The refinement loop approximates offline replay by running the best region of parameter space multiple times with increasing precision -- analogous to memory consolidation strengthening the most active attractor states. Phi improvement across iterations is the proxy metric.",
+    primaryMetric: "Phi improvement across auto-mode iterations (proxy for SWR consolidation)",
+    successCriteria:
+      "Phi in iteration 3-4 >= 110% of iteration 1; gate streak improves across iterations",
     efficiencyTool: "None required for this hypothesis",
-    status: "pending",
+    status: "partial",
     pendingReason:
-      "Requires an offline consolidation loop in the sim engine: memory-trace replay, hippocampal sharp-wave-ripple emulation, and a Phi-snapshot mechanism before and after the phase. This is a planned structural upgrade.",
+      "Full SWR test requires an offline consolidation loop in the sim engine: memory-trace replay, hippocampal sharp-wave-ripple emulation, and Phi-snapshot mechanism before and after the phase. The current proxy test uses auto-mode refinement iterations as a consolidation analog.",
+    sweepConfig: {
+      scale: 81,
+      ticksPerCombo: 40000,
+      maxIterations: 4,
+      gateStreakTarget: 2000,
+      baseRanges: {
+        TAU_ATT: [1.0, 1.5, 2.0],
+        GAMMA_GLOBAL: [1.5, 2.0, 3.0],
+        BETA_ENTROPY: [0.3, 0.5],
+        DELTA_TEMPORAL: [0.4, 0.6],
+        NOISE_SIGMA: [0.01],
+      },
+    },
   },
   {
     id: "context-cues",
@@ -108,14 +122,27 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Do apical (top-down) context inputs allow the network to switch attractors for different tasks, enabling dynamic specialisation?",
     testMethod:
-      "Train on interleaved tasks with and without apical context inputs. Measure task-switching accuracy and attractor separation. Expected: accuracy with context > 80%; without context < 60%.",
-    primaryMetric: "Task accuracy with context vs. without; attractor separation",
+      "Proxy test: run sweep with high DELTA_TEMPORAL (strong temporal coherence acts as a context-binding signal) and compare attractor stability to low DELTA_TEMPORAL runs. High delta = stronger context binding = more stable attractor per-task. Also sweep across task-skip counts via different GAMMA_GLOBAL values: high coupling mimics top-down context routing. Success: high-delta configs show higher S_C (stability coherence) relative to Phi -- indicating task-contextual binding.",
+    primaryMetric: "S_C / Phi ratio across DELTA_TEMPORAL values (proxy for context binding)",
     successCriteria:
-      "Accuracy with context > 80%; without context < 60%; attractor overlap < 0.1",
+      "S_C / Phi ratio > 1.5 in high-DELTA_TEMPORAL configs vs. < 1.0 in low-delta runs",
     efficiencyTool: "None required for this hypothesis",
-    status: "pending",
+    status: "partial",
     pendingReason:
-      "Requires apical dendritic input channels and a multi-task interleaving scheduler. These structural components are on the brain-realistic upgrade roadmap (hierarchical layers + context signal routing).",
+      "Full test requires apical dendritic input channels and a multi-task interleaving scheduler. These structural components are on the brain-realistic upgrade roadmap. The current proxy uses DELTA_TEMPORAL as a context-binding analog.",
+    sweepConfig: {
+      scale: 81,
+      ticksPerCombo: 25000,
+      maxIterations: 2,
+      gateStreakTarget: 800,
+      baseRanges: {
+        TAU_ATT: [1.0, 1.5, 2.0],
+        GAMMA_GLOBAL: [2.0, 3.0],
+        BETA_ENTROPY: [0.3, 0.5],
+        DELTA_TEMPORAL: [0.2, 0.4, 0.6, 0.8],
+        NOISE_SIGMA: [0.01, 0.02],
+      },
+    },
   },
   {
     id: "hierarchical-attractors",
@@ -124,15 +151,27 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Can the network first learn simple attractors (e.g., ROTATE), then compose them into complex task attractors (e.g., ROTATE + FLIP)?",
     testMethod:
-      "Train on simple tasks first. Then train on composed tasks. Measure Phi and task accuracy on composed tasks vs. simple tasks. Success if composed accuracy > 80%.",
-    primaryMetric: "Task accuracy on composed tasks vs. simple tasks",
+      "Proxy test: run multi-scale experiment at N=810 with strong global coupling. If Phi scales sub-linearly with N (Phi at N=810 > Phi at N=81 but not 10x higher), this indicates the network is forming hierarchical integration -- local clusters integrate first, then globally. Measure CAR (Coherence Amplification Ratio) as the proxy for hierarchical amplification.",
+    primaryMetric: "Phi scaling with N + CAR at N=810 (proxy for hierarchical integration)",
     successCriteria:
-      "Composed task accuracy > 80% after transfer from simple-task attractors",
-    efficiencyTool:
-      "Hierarchical abstraction to scale to N=1M with local cluster heads",
-    status: "pending",
+      "CAR > 2.0 at N=810 with high GAMMA_GLOBAL; Phi > 0.08 sustained (40% above N=81 baseline)",
+    efficiencyTool: "Hierarchical abstraction to scale to N=1M with local cluster heads",
+    status: "partial",
     pendingReason:
-      "Requires hierarchical attractor fields with local cluster heads, inter-level binding mechanisms, and a curriculum learning scheduler. Planned for the hierarchical topology upgrade.",
+      "Full test requires hierarchical attractor fields with local cluster heads, inter-level binding mechanisms, and a curriculum learning scheduler. The current proxy uses N=810 multi-scale sweep to observe emergent hierarchical structure in CAR.",
+    sweepConfig: {
+      scale: 810,
+      ticksPerCombo: 40000,
+      maxIterations: 3,
+      gateStreakTarget: 1000,
+      baseRanges: {
+        TAU_ATT: [1.5, 2.0, 3.0],
+        GAMMA_GLOBAL: [2.0, 3.0, 4.0],
+        BETA_ENTROPY: [0.3, 0.5],
+        DELTA_TEMPORAL: [0.4, 0.6],
+        NOISE_SIGMA: [0.01],
+      },
+    },
   },
   {
     id: "sparse-coding",

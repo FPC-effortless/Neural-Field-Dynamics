@@ -5,6 +5,8 @@ import systemRouter from "./system";
 import notesRouter from "./notes";
 import baselinesRouter from "./baselines";
 import hypothesesRouter from "./hypotheses";
+import sweetSpotRouter from "./sweetSpot";
+import codeGenRouter from "./codeGen";
 
 const router: IRouter = Router();
 
@@ -13,6 +15,8 @@ router.use(systemRouter);
 router.use(notesRouter);
 router.use(baselinesRouter);
 router.use(hypothesesRouter);
+router.use(sweetSpotRouter);
+router.use(codeGenRouter);
 router.use(runsRouter);
 
 export default router;

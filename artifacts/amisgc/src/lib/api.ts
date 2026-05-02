@@ -1004,6 +1004,120 @@ export function subscribeAutoMode(
   return () => sse.close();
 }
 
+// ── Sweet Spot Discovery ──────────────────────────────────────────────────────
+
+export type SweetSpotObjective = "phi" | "pu" | "sc" | "car" | "gateStreak";
+
+export interface ParetoEntry {
+  combo: {
+    index: number;
+    params: Record<string, number | boolean | string>;
+    finalPhi: number;
+    finalPU: number;
+    finalSC: number;
+    finalCAR: number;
+    gateStreak: number;
+    gateOpened: boolean;
+  };
+  score: number;
+  summary: string;
+  paretoFront: boolean;
+}
+
+export interface SweetSpotResult {
+  sweepId: string;
+  total: number;
+  qualified: number;
+  paretoFront: ParetoEntry[];
+  topByScore: ParetoEntry[];
+  bestConfig: Record<string, number | boolean | string> | null;
+  verdict: string;
+}
+
+export interface SweetSpotRequest {
+  sweepId?: string;
+  objectives?: SweetSpotObjective[];
+  constraints?: Record<string, number>;
+  weights?: Record<string, number>;
+}
+
+export const sweetSpotApi = {
+  analyze: (body: SweetSpotRequest) =>
+    jsonFetch<SweetSpotResult>(`${API_PREFIX}/sweet-spots`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listSweeps: () =>
+    jsonFetch<{ sweepIds: string[] }>(`${API_PREFIX}/sweet-spots/sweeps`),
+};
+
+// ── Abstraction Layer ─────────────────────────────────────────────────────────
+
+export interface AbstractionImpact {
+  deltaPhi: number;
+  deltaPU: number;
+  deltaSC: number;
+  flopsMultiplier: number;
+  memoryMultiplier: number;
+  maxScaleEnabled: number;
+}
+
+export interface AbstractionDef {
+  id: string;
+  name: string;
+  description: string;
+  biologicalJustification: string;
+  status: "stable" | "beta" | "experimental";
+  impact: AbstractionImpact;
+  minPhiRequired: number;
+}
+
+export interface AbstractionPreviewResult {
+  baseRanges: Record<string, number[]>;
+  scale: number;
+  ticksPerCombo?: number;
+  combinedImpact: AbstractionImpact;
+}
+
+export const abstractionApi = {
+  list: () =>
+    jsonFetch<{ abstractions: AbstractionDef[] }>(`${API_PREFIX}/abstractions`),
+  preview: (body: { abstractionIds: string[]; baseRanges?: Record<string, number[]>; scale?: number }) =>
+    jsonFetch<AbstractionPreviewResult>(`${API_PREFIX}/abstractions/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+// ── Code Generation ───────────────────────────────────────────────────────────
+
+export type CodeTarget = "cpu" | "gpu" | "neuromorphic";
+
+export interface CodeGenResult {
+  target: CodeTarget;
+  filename: string;
+  language: string;
+  code: string;
+  runInstructions: string;
+  estimatedSpeedup: string;
+}
+
+export interface CodeGenRequest {
+  target?: CodeTarget;
+  params?: Record<string, number | boolean | string>;
+  scale?: 81 | 810 | 81000;
+  ticksPerCombo?: number;
+  experimentLabel?: string;
+}
+
+export const codeGenApi = {
+  generate: (body: CodeGenRequest) =>
+    jsonFetch<CodeGenResult>(`${API_PREFIX}/codegen`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
 // ── Hypothesis testing ────────────────────────────────────────────────────────
 
 export type HypothesisStatus = "testable" | "partial" | "pending";
