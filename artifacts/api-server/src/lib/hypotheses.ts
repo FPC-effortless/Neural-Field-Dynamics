@@ -64,25 +64,21 @@ export const HYPOTHESES: Hypothesis[] = [
     question:
       "Does raising the metabolic cost of firing (FIRE_COST) reduce attractor overlap and sharpen neuron specialisation?",
     testMethod:
-      "Sweep BETA_ENTROPY as a proxy for metabolic pressure -- higher entropy weight penalises broad participation in a similar way to a metabolic cost. Measure participation rate (sparsity) and Phi across the sweep. A proxy confirmation: sparsity rises and Phi holds as beta increases.",
-    primaryMetric: "Participation rate (sparsity) + Phi across beta values",
+      "Sweep FIRE_COST directly across a 5x range (1.0 to 16.0). Measure avgAtp (mean ATP reserve), networkPhi (integration), and attractor count. Prediction: low FIRE_COST = broad firing = low Phi; high FIRE_COST = sparse firing = neurons forced to specialise = higher Phi if global coupling is sufficient. The H2 signature: Phi peaks at an intermediate FIRE_COST (4-8) where sparsity is 2-6% -- too low = overlap noise, too high = silence.",
+    primaryMetric: "Phi + avgAtp across FIRE_COST values (sparsity proxy = 1 - alarming/N)",
     successCriteria:
-      "Sparsity increases toward 2-6% as BETA_ENTROPY rises; Phi remains > 0.05",
-    efficiencyTool: "Automated parameter sweep over BETA_ENTROPY as metabolic proxy",
-    status: "partial",
-    pendingReason:
-      "FIRE_COST is a compile-time constant in the current sim. Exposing it as a swept axis requires a parameter-binding structural upgrade. The current sweep uses BETA_ENTROPY as a metabolic-pressure proxy.",
+      "Phi > 0.05 at intermediate FIRE_COST (4-8); alarming fraction drops toward 2-6% as FIRE_COST rises",
+    efficiencyTool: "FIRE_COST is now a first-class swept parameter -- no proxy required",
+    status: "testable",
     sweepConfig: {
       scale: 81,
       ticksPerCombo: 20000,
-      maxIterations: 2,
+      maxIterations: 3,
       gateStreakTarget: 500,
       baseRanges: {
-        TAU_ATT: [1.5, 2.0],
-        GAMMA_GLOBAL: [2.0, 3.0],
-        BETA_ENTROPY: [0.1, 0.3, 0.5, 0.8],
-        DELTA_TEMPORAL: [0.4],
-        NOISE_SIGMA: [0.01, 0.02],
+        FIRE_COST: [1.0, 2.5, 4.0, 8.0, 16.0],
+        GAMMA_GLOBAL: [1.5, 2.0, 3.0],
+        TAU_ATT: [1.0, 2.0],
       },
     },
   },

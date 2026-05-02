@@ -56,7 +56,7 @@ export function AbstractionPanel({ open, onClose, onStarted }: AbstractionPanelP
   const previewMutation = useMutation({
     mutationFn: (ids: string[]) =>
       abstractionApi.preview({ abstractionIds: ids }),
-    onSuccess: (data) => setPreview(data as typeof preview),
+    onSuccess: (data) => setPreview(data as unknown as typeof preview),
   });
 
   const launchMutation = useMutation({

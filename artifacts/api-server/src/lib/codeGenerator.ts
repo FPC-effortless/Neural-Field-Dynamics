@@ -130,7 +130,8 @@ y_prev = y.copy()
 t_start = time.time()
 
 print(f"AMISGC CPU run | N={N} | ticks={cfg.ticks}")
-print(f"Parameters: {dict((k, getattr(cfg, k)) for k in ['TAU_ATT', 'GAMMA_GLOBAL', 'BETA_ENTROPY', 'DELTA_TEMPORAL', 'NOISE_SIGMA'] if hasattr(cfg, k))}")
+_report_keys = ['TAU_ATT', 'GAMMA_GLOBAL', 'BETA_ENTROPY', 'DELTA_TEMPORAL', 'NOISE_SIGMA', 'FIRE_COST', 'REGEN', 'COOP_BONUS']
+print(f"Parameters: {dict((k, getattr(cfg, k)) for k in _report_keys if hasattr(cfg, k))}")
 
 for t in range(cfg.ticks):
     # 1. Global field G (coherence-amplifying formula)
@@ -164,8 +165,10 @@ for t in range(cfg.ticks):
     # 5. Slow apical EMA
     a_slow = 0.98 * a_slow + 0.02 * a
 
-    # 6. ATP (metabolic gating)
-    atp = np.clip(atp - 0.001 * y_new + 0.002, 0.1, 1.0)
+    # 6. ATP (metabolic gating) — FIRE_COST controls metabolic cost per spike
+    fire_cost = float(getattr(cfg, 'FIRE_COST', 4.0)) / 100.0
+    regen = float(getattr(cfg, 'REGEN', 1.1)) / 100.0
+    atp = np.clip(atp - fire_cost * y_new + regen, 0.1, 1.0)
 
     y_prev_copy = y.copy()
     h = h_new

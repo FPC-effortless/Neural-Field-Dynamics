@@ -24,7 +24,7 @@ Efficiency (sparse coupling, quantized weights, GPU code) is used only to scale 
 | # | Title | Status |
 |---|---|---|
 | H1 | General Mechanisms Specialise Without Modules | TESTABLE |
-| H2 | Energy Constraints Force Specialisation | PROXY SWEEP (BETA_ENTROPY proxy for FIRE_COST) |
+| H2 | Energy Constraints Force Specialisation | TESTABLE — FIRE_COST [1, 2.5, 4, 8, 16] × GAMMA_GLOBAL [1.5, 2, 3] × TAU_ATT [1, 2] |
 | H3 | Offline Consolidation (SWRs) Strengthens Attractors | PENDING (needs SWR structural upgrade) |
 | H4 | Context Cues Enable Task Switching | PENDING (needs apical input channels) |
 | H5 | Hierarchical Attractors Enable Composition | PENDING (needs hierarchical topology) |

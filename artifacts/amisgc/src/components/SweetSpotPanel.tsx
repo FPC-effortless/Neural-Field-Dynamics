@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { sweetSpotApi, type SweetSpotResult, type ParetoEntry } from "../lib/api";
 import { Panel } from "./Panel";
+import { fmt } from "../lib/format";
 
 interface SweetSpotPanelProps {
   open: boolean;

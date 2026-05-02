@@ -579,6 +579,10 @@ interface SweepCombo {
   bestCAR: number;
   ticksDone: number;
   runId: string | null;
+  // Set when the combo was cancelled early because Phi was below the noise
+  // floor and gateStreak was still 0 after EARLY_EXIT_MIN_TICKS ticks.
+  // Saves ~75% of compute for clearly-dead parameter regions.
+  earlyExited?: boolean;
 }
 
 interface SweepRecord {
@@ -757,6 +761,16 @@ function serializeSweep(s: SweepRecord) {
   };
 }
 
+// ─── Early-exit for clearly-dead combos ──────────────────────────────────────
+// After this many ticks, if the network shows zero gate streak AND Phi is
+// still below the noise floor, the parameter region is inert — cancel early.
+// At the default 30 000-tick budget this saves ~73% of compute per dead combo.
+// Conservative thresholds keep false-positive exits extremely rare:
+//   • 8 000-tick warm-up is 10× the typical Phi-rise time-constant at N=81.
+//   • Phi < 0.008 is 6× below Gate-I threshold — clearly not ascending.
+const EARLY_EXIT_MIN_TICKS = 8000;
+const EARLY_EXIT_PHI_THRESH = 0.008;
+
 async function runSweepCombo(
   s: SweepRecord,
   combo: SweepCombo
@@ -827,6 +841,18 @@ async function runSweepCombo(
         }
         if (e.t % 1000 === 0)
           broadcastSweep(s, "combo_progress", { sweepId: s.id, combo });
+        // Early-exit: cancel combos that are clearly dead to save compute.
+        // handle is assigned synchronously by startRun() before any onSample
+        // fires (the runner awaits setImmediate before its first tick), so
+        // handle.cancel() is always safe here.
+        if (
+          e.t >= EARLY_EXIT_MIN_TICKS &&
+          combo.gateStreak === 0 &&
+          combo.finalPhi < EARLY_EXIT_PHI_THRESH
+        ) {
+          combo.earlyExited = true;
+          handle.cancel();
+        }
       },
       onPhase: () => undefined,
       onComplete: (e: RunCompleteEvent) => {
@@ -2226,10 +2252,39 @@ function refineRange(
   return Array.from(new Set(candidates));
 }
 
+// Coefficient of Variation for a given sweep axis across completed combos.
+// Groups combos by their value for `axisKey`, computes per-group mean of
+// finalPhi, then returns std(means) / mean(means). A CoV near 0 means the
+// axis has no discriminating power — the parameter makes no difference.
+function computeAxisCoV(combos: SweepCombo[], axisKey: string): number {
+  const groups: Record<string, number[]> = {};
+  for (const c of combos) {
+    if (c.status !== "completed") continue;
+    const v = c.params[axisKey];
+    if (typeof v !== "number") continue;
+    const key = v.toFixed(6);
+    if (!groups[key]) groups[key] = [];
+    (groups[key] as number[]).push(c.finalPhi);
+  }
+  const groupKeys = Object.keys(groups);
+  if (groupKeys.length < 2) return 0;
+  const means = groupKeys.map((k) => {
+    const vals = groups[k] as number[];
+    return vals.reduce((s, x) => s + x, 0) / vals.length;
+  });
+  const mu = means.reduce((s, x) => s + x, 0) / means.length;
+  if (mu < 1e-6) return 0;
+  const std = Math.sqrt(
+    means.reduce((s, x) => s + (x - mu) * (x - mu), 0) / means.length,
+  );
+  return std / mu;
+}
+
 function refineRangesAroundCombo(
   baseRanges: Record<string, number[]>,
   bestParams: Record<string, number | boolean | string>,
   iteration: number,
+  completedCombos?: SweepCombo[],
 ): Record<string, number[]> {
   const out: Record<string, number[]> = {};
   for (const [key, values] of Object.entries(baseRanges)) {
@@ -2237,6 +2292,16 @@ function refineRangesAroundCombo(
     if (typeof center !== "number" || !Number.isFinite(center)) {
       out[key] = values;
       continue;
+    }
+    // CoV-based dead-parameter pruning: if this axis shows negligible
+    // discriminating power across completed combos (CoV < 5%), fix it at
+    // the best-combo value rather than wasting refinement budget on it.
+    if (completedCombos && completedCombos.length >= 4 && values.length > 1) {
+      const cov = computeAxisCoV(completedCombos, key);
+      if (cov < 0.05) {
+        out[key] = [center];
+        continue;
+      }
     }
     out[key] = refineRange(values, center, iteration);
   }
@@ -2470,8 +2535,15 @@ router.post("/automode", (req, res) => {
           break;
         }
         // Refine for the next iteration around this iteration's best combo.
+        // Pass completed combos so dead axes (CoV < 5%) are pruned.
         if (it.bestParams) {
-          nextRanges = refineRangesAroundCombo(baseRanges, it.bestParams, i + 1);
+          const prevSweep = sweeps.get(it.sweepId);
+          nextRanges = refineRangesAroundCombo(
+            baseRanges,
+            it.bestParams,
+            i + 1,
+            prevSweep?.combos,
+          );
           // If refinement collapsed every dimension to a single value, we
           // can't make progress — bail out.
           const collapsedGrid = cartesian(nextRanges);

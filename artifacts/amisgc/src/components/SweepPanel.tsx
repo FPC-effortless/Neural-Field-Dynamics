@@ -26,20 +26,63 @@ function paramSummary(p: Record<string, number | boolean | string>): string {
 // (offline replay compression) for 6×5×4×3×3×2×3 = 6 480 combos — those two
 // axes require the brain-realistic upgrade (hierarchical layers + replay) and
 // will be added once the structural enhancements are active.
-const PHASE0_GRID = {
+const PHASE0_GRID: Record<string, number[]> = {
   TAU_ATT: [0.7, 1.0, 1.5, 2.0, 3.0],
   GAMMA_GLOBAL: [1.0, 1.5, 2.0, 3.0],
   BETA_ENTROPY: [0.1, 0.3, 0.5, 0.8],
   DELTA_TEMPORAL: [0.2, 0.4, 0.6],
   NOISE_SIGMA: [0.01, 0.02, 0.05],
 };
-const PHASE0_TOTAL = Object.values(PHASE0_GRID).reduce((a, b) => a * b.length, 1);
-// v13 spec: default 30 000 ticks per combo; researcher can manually bump to
-// 50 000 if a borderline combo shows a clear upward Φ trend in its final 5k.
 const PHASE0_DEFAULT_TICKS = 30000;
 const PHASE0_MAX_TICKS = 50000;
 
+// Researcher-accessible extra sweep axes: biologically motivated parameters
+// beyond the Phase-0 defaults. Clicking a preset adds/replaces the axis in
+// the custom panel. The values shown are literature-motivated ranges.
+interface AxisPreset { key: string; label: string; values: number[]; note: string }
+const EXTRA_AXIS_PRESETS: AxisPreset[] = [
+  {
+    key: "FIRE_COST",
+    label: "FIRE_COST (metabolic cost per spike)",
+    values: [1.0, 2.5, 4.0, 8.0, 16.0],
+    note: "H2 axis. Low = broad firing, high = sparse. Peak Phi expected at 4-8.",
+  },
+  {
+    key: "REGEN",
+    label: "REGEN (ATP regeneration rate)",
+    values: [0.7, 0.9, 1.1, 1.3],
+    note: "Pairs with FIRE_COST. Lower regen = tighter energy budget.",
+  },
+  {
+    key: "COOP_BONUS",
+    label: "COOP_BONUS (cooperative ATP bonus)",
+    values: [3.0, 6.0, 9.0, 12.0],
+    note: "Reward for synchronised firing. Higher = more attractor cohesion.",
+  },
+  {
+    key: "K_LOCAL",
+    label: "K_LOCAL (local connectivity radius)",
+    values: [4, 8, 12, 16],
+    note: "Connection fan-out per neuron. Higher = denser local coupling.",
+  },
+  {
+    key: "HEBB",
+    label: "HEBB (Hebbian learning rate)",
+    values: [0.002, 0.005, 0.01, 0.02],
+    note: "Weight update speed. High = fast association but less stable.",
+  },
+];
+
 type SortMode = "CAR" | "STREAK" | "INDEX";
+
+interface CustomAxis { key: string; rawValues: string }
+
+function parseCustomValues(raw: string): number[] {
+  return raw
+    .split(",")
+    .map((s) => parseFloat(s.trim()))
+    .filter((n) => Number.isFinite(n));
+}
 
 export function SweepPanel({ open, onClose }: SweepPanelProps) {
   const [sweep, setSweep] = useState<SweepDetail | null>(null);
@@ -52,6 +95,45 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
   const [ticks, setTicks] = useState<number>(PHASE0_DEFAULT_TICKS);
   // Live sort for the combos table
   const [sortMode, setSortMode] = useState<SortMode>("CAR");
+  // Extra custom axes (merged with PHASE0_GRID on launch)
+  const [customAxes, setCustomAxes] = useState<CustomAxis[]>([]);
+  const [showCustom, setShowCustom] = useState(false);
+
+  // Build the merged ranges object for preview / launch
+  const mergedRanges = useMemo<Record<string, number[]> | undefined>(() => {
+    if (customAxes.length === 0) return undefined; // use server default
+    const extra: Record<string, number[]> = {};
+    for (const ax of customAxes) {
+      const vals = parseCustomValues(ax.rawValues);
+      if (vals.length > 0) extra[ax.key] = vals;
+    }
+    return { ...PHASE0_GRID, ...extra };
+  }, [customAxes]);
+
+  const comboCount = useMemo(() => {
+    const grid = mergedRanges ?? PHASE0_GRID;
+    return Object.values(grid).reduce((a, b) => a * b.length, 1);
+  }, [mergedRanges]);
+
+  const addCustomAxis = (preset: AxisPreset) => {
+    setCustomAxes((prev) => {
+      const existing = prev.findIndex((a) => a.key === preset.key);
+      const entry: CustomAxis = { key: preset.key, rawValues: preset.values.join(", ") };
+      if (existing >= 0) {
+        const next = prev.slice();
+        next[existing] = entry;
+        return next;
+      }
+      return [...prev, entry];
+    });
+    setShowCustom(true);
+  };
+
+  const removeCustomAxis = (key: string) =>
+    setCustomAxes((prev) => prev.filter((a) => a.key !== key));
+
+  const updateCustomAxis = (key: string, rawValues: string) =>
+    setCustomAxes((prev) => prev.map((a) => (a.key === key ? { ...a, rawValues } : a)));
 
   useEffect(() => {
     if (!open || !sweep?.id) return;
@@ -84,6 +166,7 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         scale: 81 | 810 | 81000;
         neurons?: number;
         topK?: number;
+        ranges?: Record<string, number[]>;
       } = {
         ticksPerCombo: ticks,
         scale,
@@ -93,6 +176,11 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
       }
       if (typeof topKNum === "number" && Number.isFinite(topKNum)) {
         body.topK = topKNum;
+      }
+      // Only send ranges if the researcher added custom axes — otherwise
+      // the server uses its own PHASE0_DEFAULT_RANGES unchanged.
+      if (mergedRanges) {
+        body.ranges = mergedRanges;
       }
       const { id } = await sweepApi.create(body);
       const detail = await sweepApi.get(id);
@@ -172,17 +260,14 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
         </div>
 
         {!sweep ? (
-          <Panel title={`AUTO SWEEP · ${PHASE0_TOTAL}-COMBO PHASE 0 GRID`} accent="#00ffc4">
+          <Panel title={`AUTO SWEEP · ${comboCount}-COMBO PHASE 0 GRID`} accent="#00ffc4">
             <div style={{ fontSize: 9, color: "#0d7060", marginBottom: 10, lineHeight: 1.6 }}>
               Phase 0 Existence-Gate hunt — spec §6.1 forced-coupling regime.
               Gate I requires Φ &gt; 0.05 ∧ PU &gt; 0.1 ∧ S_C &gt; 0.1 sustained ≥ 1 000 consecutive ticks.
               <br />
-              Current grid axes: τ ∈ {"{0.7, 1.0, 1.5, 2.0, 3.0}"} · γ ∈ {"{1.0, 1.5, 2.0, 3.0}"} ·
-              β ∈ {"{0.1, 0.3, 0.5, 0.8}"} · δ ∈ {"{0.2, 0.4, 0.6}"} · σ ∈ {"{0.01, 0.02, 0.05}"}
-              = <b>{PHASE0_TOTAL} combos</b>.{" "}
-              Full spec grid (6 480 combos) adds p_inhib and replay_speed — pending brain-realistic upgrade.
+              Base axes: τ · γ · β · δ · σ = 720 combos. Add extra axes below to sweep FIRE_COST, REGEN, or others.
               <br />
-              Combos are live-sorted by CAR (Φ / (1 − H_C/H_max)) so coherence-amplifying leaders surface first.
+              Dead combos (Φ &lt; 0.008 at 8k ticks, no streak) exit early — saves ~73% compute per inert region.
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
@@ -238,27 +323,132 @@ export function SweepPanel({ open, onClose }: SweepPanelProps) {
                   style={inputStyle}
                 />
                 <div style={{ fontSize: 8, color: "#0d7060", marginTop: 2 }}>
-                  500 – 50 000
+                  500 – 50 000 (dead combos exit at 8k)
                 </div>
               </FieldLabel>
             </div>
 
+            {/* ── Extra parameter axes ── */}
+            <div style={{ marginBottom: 12 }}>
+              <button
+                onClick={() => setShowCustom((v) => !v)}
+                style={{
+                  background: "transparent",
+                  border: "1px solid #0f4a3a",
+                  color: showCustom ? "#00ffc4" : "#0d7060",
+                  fontSize: 9,
+                  padding: "3px 10px",
+                  letterSpacing: 2,
+                  borderRadius: 2,
+                  cursor: "pointer",
+                  marginBottom: 8,
+                }}
+              >
+                {showCustom ? "▾" : "▸"} EXTRA PARAMETER AXES
+                {customAxes.length > 0 ? ` (${customAxes.length} added)` : ""}
+              </button>
+
+              {showCustom && (
+                <div style={{ border: "1px solid #0f4a3a", padding: 10, borderRadius: 2 }}>
+                  <div style={{ fontSize: 8, color: "#0d7060", marginBottom: 8 }}>
+                    Add axes to the sweep grid. Values are comma-separated numbers.
+                    Extra axes multiply the combo count — keep the total under 1 000.
+                  </div>
+                  {/* Preset quick-add buttons */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+                    {EXTRA_AXIS_PRESETS.map((p) => {
+                      const active = customAxes.some((a) => a.key === p.key);
+                      return (
+                        <button
+                          key={p.key}
+                          onClick={() => (active ? removeCustomAxis(p.key) : addCustomAxis(p))}
+                          title={p.note}
+                          style={{
+                            background: active ? "#00ffc4" : "transparent",
+                            color: active ? "#020c16" : "#00ffc4",
+                            border: "1px solid #0f4a3a",
+                            fontSize: 8,
+                            padding: "3px 8px",
+                            borderRadius: 2,
+                            cursor: "pointer",
+                            letterSpacing: 1,
+                          }}
+                        >
+                          {active ? "✓ " : "+ "}{p.key}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* Active custom axes editor */}
+                  {customAxes.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {customAxes.map((ax) => {
+                        const preset = EXTRA_AXIS_PRESETS.find((p) => p.key === ax.key);
+                        const vals = parseCustomValues(ax.rawValues);
+                        return (
+                          <div key={ax.key} style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                            <div style={{ flex: "0 0 120px" }}>
+                              <div style={{ fontSize: 8, color: "#00ffc4", letterSpacing: 1, marginBottom: 2 }}>
+                                {ax.key}
+                              </div>
+                              {preset && (
+                                <div style={{ fontSize: 7, color: "#0d7060" }}>
+                                  {preset.note}
+                                </div>
+                              )}
+                            </div>
+                            <input
+                              value={ax.rawValues}
+                              onChange={(e) => updateCustomAxis(ax.key, e.target.value)}
+                              placeholder="e.g. 1.0, 4.0, 16.0"
+                              style={{ ...inputStyle, flex: 1 }}
+                            />
+                            <div style={{ fontSize: 8, color: "#0d7060", alignSelf: "center" }}>
+                              {vals.length} vals
+                            </div>
+                            <button
+                              onClick={() => removeCustomAxis(ax.key)}
+                              style={{
+                                background: "transparent",
+                                border: "1px solid #0f4a3a",
+                                color: "#ff4477",
+                                fontSize: 8,
+                                padding: "2px 6px",
+                                borderRadius: 2,
+                                cursor: "pointer",
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
+                      <div style={{ fontSize: 8, color: comboCount > 1000 ? "#ff4477" : "#0d7060" }}>
+                        Total combos: <b style={{ color: comboCount > 1000 ? "#ff4477" : "#00ffc4" }}>{comboCount.toLocaleString()}</b>
+                        {comboCount > 1000 ? " — exceeds 1 000 limit, reduce axes" : ""}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <button
               onClick={start}
-              disabled={launching}
+              disabled={launching || comboCount > 1000}
               style={{
-                background: "#00ffc4",
-                color: "#020c16",
+                background: comboCount > 1000 ? "#0a2828" : "#00ffc4",
+                color: comboCount > 1000 ? "#0d7060" : "#020c16",
                 border: "1px solid #00ffc4",
                 padding: "6px 14px",
                 fontSize: 10,
                 letterSpacing: 2,
                 borderRadius: 2,
                 fontWeight: 700,
-                cursor: launching ? "wait" : "pointer",
+                cursor: launching || comboCount > 1000 ? "not-allowed" : "pointer",
               }}
             >
-              {launching ? "STARTING…" : `▶ START AUTO SWEEP (${PHASE0_TOTAL} combos)`}
+              {launching ? "STARTING…" : `▶ START AUTO SWEEP (${comboCount.toLocaleString()} combos)`}
             </button>
             {error ? (
               <div style={{ marginTop: 8, color: "#ff4477", fontSize: 9 }}>{error}</div>
@@ -535,16 +725,20 @@ function ComboTable({
                 <td style={{ padding: "3px 6px" }}>
                   <Pill
                     color={
-                      c.status === "completed"
-                        ? c.gateOpened
-                          ? "#00ffc4"
-                          : "#ff4477"
-                        : c.status === "running"
-                          ? "#ffb040"
-                          : "#0f4a3a"
+                      (c as SweepCombo & { earlyExited?: boolean }).earlyExited
+                        ? "#556560"
+                        : c.status === "completed"
+                          ? c.gateOpened
+                            ? "#00ffc4"
+                            : "#ff4477"
+                          : c.status === "running"
+                            ? "#ffb040"
+                            : "#0f4a3a"
                     }
                   >
-                    {c.status}
+                    {(c as SweepCombo & { earlyExited?: boolean }).earlyExited
+                      ? "early-exit"
+                      : c.status}
                   </Pill>
                 </td>
               </tr>
