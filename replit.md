@@ -4,6 +4,47 @@
 
 A full working research codebase that runs on Kaggle, the web, and the CLI, with the web UI and CLI driving the same simulation engine simultaneously.
 
+## Science-First Refocus (May 2026)
+
+**Core research question:** How can a general-purpose system emergently specialise for complex tasks without pre-programmed modules?
+
+Efficiency (sparse coupling, quantized weights, GPU code) is used only to scale experiments and validate biological plausibility — not as an end goal.
+
+### New Components
+
+| File | Purpose |
+|---|---|
+| `artifacts/api-server/src/lib/hypotheses.ts` | 7 research hypotheses from the spec with sweep configs, status codes (testable/partial/pending), and pendingReason explanations |
+| `artifacts/api-server/src/routes/hypotheses.ts` | `GET /api/hypotheses`, `GET /api/hypotheses/:id` |
+| `artifacts/amisgc/src/components/HypothesisPanel.tsx` | Full-screen modal listing all 7 hypotheses with run buttons, status badges, success criteria, and efficiency-tool labels |
+| `artifacts/amisgc/src/components/BiologicalPlausibilityPanel.tsx` | Live monitor computing sparsity, FLOPs/neuron/tick, memory/neuron, power estimate (at current scale and extrapolated to N=1M), and wiring-cost proxy (networkClustering). Flags constraint violations in real time. |
+
+### 7 Research Hypotheses
+
+| # | Title | Status |
+|---|---|---|
+| H1 | General Mechanisms Specialise Without Modules | TESTABLE |
+| H2 | Energy Constraints Force Specialisation | PROXY SWEEP (BETA_ENTROPY proxy for FIRE_COST) |
+| H3 | Offline Consolidation (SWRs) Strengthens Attractors | PENDING (needs SWR structural upgrade) |
+| H4 | Context Cues Enable Task Switching | PENDING (needs apical input channels) |
+| H5 | Hierarchical Attractors Enable Composition | PENDING (needs hierarchical topology) |
+| H6 | Sparse Coding Is Sufficient for Specialisation | TESTABLE |
+| H7 | Small-World Topology Minimises Wiring Cost | PROXY SWEEP (passive clustering observation) |
+
+### Biological Plausibility Targets
+
+| Metric | Target | Source |
+|---|---|---|
+| Sparsity | 2–6% active neurons | Brain recordings |
+| FLOPs/neuron/tick | < 100 | Brain ~0.23 FLOPs/neuron/tick |
+| Memory/neuron | < 1 KB | Brain ~1 KB synapses + state |
+| Power at N=1M | < 1 W | Brain 20 W for 86B neurons |
+| Clustering | > 0.3 | Small-world topology |
+
+### Header Navigation
+
+The `🧬 HYPOTHESES` button opens the hypothesis tester. The Lab Home intro prominently shows the core research question and an "OPEN HYPOTHESIS TESTER" shortcut.
+
 ## v12 revision — soft globally coupled attractor field
 
 The previous v12 used a hard top-K bottleneck which was unable to clear the **Existence Gate** (`Φ > 0.05 ∧ PU > 0.1 ∧ S_C > 0.1` sustained ≥ 100 ticks). The current revision replaces it with a soft attractor field driven by five named parameters:

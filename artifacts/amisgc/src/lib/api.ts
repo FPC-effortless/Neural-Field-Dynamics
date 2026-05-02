@@ -1003,3 +1003,35 @@ export function subscribeAutoMode(
   sse.addEventListener("automode_cancelled", onTerminal);
   return () => sse.close();
 }
+
+// ── Hypothesis testing ────────────────────────────────────────────────────────
+
+export type HypothesisStatus = "testable" | "partial" | "pending";
+
+export interface HypothesisSweepConfig {
+  scale: 81 | 810 | 81000;
+  ticksPerCombo: number;
+  maxIterations: number;
+  gateStreakTarget: number;
+  baseRanges: Record<string, number[]>;
+}
+
+export interface Hypothesis {
+  id: string;
+  index: number;
+  title: string;
+  question: string;
+  testMethod: string;
+  primaryMetric: string;
+  successCriteria: string;
+  efficiencyTool: string;
+  status: HypothesisStatus;
+  pendingReason?: string;
+  sweepConfig?: HypothesisSweepConfig;
+}
+
+export const hypothesisApi = {
+  list: () =>
+    jsonFetch<{ hypotheses: Hypothesis[] }>(`${API_PREFIX}/hypotheses`),
+  get: (id: string) => jsonFetch<Hypothesis>(`${API_PREFIX}/hypotheses/${id}`),
+};

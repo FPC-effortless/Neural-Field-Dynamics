@@ -12,6 +12,8 @@ import { AutoModePanel } from "./components/AutoModePanel";
 import { LeaderboardPanel } from "./components/LeaderboardPanel";
 import { PhaseLockBanner } from "./components/PhaseLockBanner";
 import { LabHome } from "./components/LabHome";
+import { HypothesisPanel } from "./components/HypothesisPanel";
+import { BiologicalPlausibilityPanel } from "./components/BiologicalPlausibilityPanel";
 import {
   api,
   autoModeApi,
@@ -23,6 +25,7 @@ import {
   type Stats,
   type CreateRunRequest,
 } from "./lib/api";
+// hypothesisApi imported via HypothesisPanel (self-contained)
 import { exportRunCSV, exportRunJSON, exportRunsTable } from "./lib/exporters";
 import { PHCOL } from "./lib/colors";
 
@@ -66,7 +69,7 @@ function pushSeries(prev: Record<string, number[]>, stats: Stats): Record<string
 // (Sweep + Batch + Leaderboard all stacked, fighting for the backdrop and
 // the Esc-key) — that "chimera" feel the researchers complained about.
 // Centralising the state here also makes Esc-to-close trivial.
-type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | null;
+type ActiveModal = "sweep" | "batch" | "automode" | "leaderboard" | "hypothesis" | null;
 
 type SurfaceMode = "LAB" | "ADVANCED";
 const SURFACE_KEY = "amisgc.surfaceMode";
@@ -334,6 +337,7 @@ function AppShell() {
         onOpenBatch={() => setActiveModal("batch")}
         onOpenAutoMode={() => setActiveModal("automode")}
         onOpenLeaderboard={() => setActiveModal("leaderboard")}
+        onOpenHypothesis={() => setActiveModal("hypothesis")}
         speed={vizSpeed}
         onSpeedChange={setVizSpeed}
         canExport={!!activeRun}
@@ -346,6 +350,7 @@ function AppShell() {
             onStarted={(id) => setWatchedAutoModeId(id)}
             onCancelWatched={handleCancelAutoMode}
             onOpenAdvanced={() => setSurfaceMode("ADVANCED")}
+            onOpenHypotheses={() => setActiveModal("hypothesis")}
           />
         ) : (
         <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
@@ -408,6 +413,7 @@ function AppShell() {
             {/* Right: live metrics */}
             <div className="lg:col-span-3 space-y-3">
               <MetricsPanel stats={stats} series={series} taskKey={taskKey} />
+              <BiologicalPlausibilityPanel stats={stats} scale={activeRun?.scale ?? 81} />
               <button
                 type="button"
                 onClick={() => setSurfaceMode("LAB")}
@@ -443,6 +449,11 @@ function AppShell() {
       <LeaderboardPanel
         open={activeModal === "leaderboard"}
         onClose={closeModal}
+      />
+      <HypothesisPanel
+        open={activeModal === "hypothesis"}
+        onClose={closeModal}
+        onStarted={(id) => { setWatchedAutoModeId(id); setSurfaceMode("LAB"); closeModal(); }}
       />
 
       {drawerOpen && (
@@ -495,6 +506,7 @@ interface HeaderProps {
   onOpenBatch: () => void;
   onOpenAutoMode: () => void;
   onOpenLeaderboard: () => void;
+  onOpenHypothesis: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
   canExport: boolean;
@@ -561,6 +573,7 @@ function Header({
   onOpenBatch,
   onOpenAutoMode,
   onOpenLeaderboard,
+  onOpenHypothesis,
   speed,
   onSpeedChange,
   canExport,
@@ -658,6 +671,13 @@ function Header({
           >
             🏆 STATS
           </HeaderButton>
+          <HeaderButton
+            onClick={onOpenHypothesis}
+            color="#3aaf6a"
+            title="test the 7 emergent-specialisation hypotheses"
+          >
+            🧬 HYPOTHESES
+          </HeaderButton>
 
           <span style={{ width: 1, height: 16, background: "#0a2828", margin: "0 2px" }} />
 
@@ -732,8 +752,8 @@ function Footer() {
         letterSpacing: 2,
       }}
     >
-      AMISGC RESEARCH PROGRAMME · Emergent Intelligence from a Metabolically Constrained
-      Predictive Neural Field · CORE-1 → PHASE 12 + ARC
+      AMISGC RESEARCH PROGRAMME · How can a general-purpose system emergently specialise without pre-programmed modules?
+      Efficiency is a tool to scale experiments — not the goal.
     </footer>
   );
 }

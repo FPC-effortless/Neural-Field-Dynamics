@@ -7,6 +7,7 @@ import { StatusScoreboard } from "./StatusScoreboard";
 interface LabHomeProps {
   onStarted?: (id: string) => void;
   onOpenAdvanced?: () => void;
+  onOpenHypotheses?: () => void;
   watchedAutoMode: AutoModeDetail | null;
   onCancelWatched?: (id: string) => void;
 }
@@ -24,6 +25,7 @@ const DIFFICULTY_BADGE: Record<
 export function LabHome({
   onStarted,
   onOpenAdvanced,
+  onOpenHypotheses,
   watchedAutoMode,
   onCancelWatched,
 }: LabHomeProps) {
@@ -92,19 +94,43 @@ export function LabHome({
             >
               AMISGC · EMERGENT INTELLIGENCE RESEARCH PLATFORM
             </div>
+            {/* Core research question */}
+            <div
+              style={{
+                fontSize: 8,
+                color: "#3aaf6a",
+                letterSpacing: 1.5,
+                marginBottom: 4,
+              }}
+            >
+              CORE QUESTION
+            </div>
             <div
               style={{
                 fontSize: 13,
                 color: "#c5dfd4",
                 lineHeight: 1.6,
                 maxWidth: 720,
+                marginBottom: 6,
+              }}
+            >
+              How can a general-purpose system emergently specialise for complex
+              tasks without pre-programmed modules?
+            </div>
+            <div
+              style={{
+                fontSize: 9,
+                color: "#7a9a90",
+                lineHeight: 1.5,
+                maxWidth: 680,
                 marginBottom: 10,
               }}
             >
-              A self-operating laboratory for the spontaneous emergence of
-              cognition. We do not program the network to be intelligent — each
-              neuron follows only local rules. Intelligence emerges, or it
-              doesn&apos;t.
+              Each neuron follows only local rules — no task-specific code, no
+              hand-designed modules. Specialisation emerges from attractors,
+              predictive coding, and metabolic constraints, or it doesn&apos;t.
+              Efficiency (sparse coupling, quantized weights, GPU code) is used
+              only to scale experiments and validate biological plausibility.
             </div>
             {/* §1.3 — 4-step flow */}
             <div
@@ -115,7 +141,7 @@ export function LabHome({
               }}
             >
               {[
-                { step: "1", label: "Choose a preset" },
+                { step: "1", label: "Choose a preset or hypothesis" },
                 { step: "2", label: "Click Start" },
                 { step: "3", label: "Watch the live dashboard" },
                 { step: "4", label: "Read the plain-English report" },
@@ -167,6 +193,28 @@ export function LabHome({
               and reporting while enforcing scientific rigour through hard gates
               and ablation validations.
             </div>
+            {onOpenHypotheses && (
+              <button
+                type="button"
+                onClick={onOpenHypotheses}
+                style={{
+                  marginTop: 8,
+                  padding: "5px 10px",
+                  fontSize: 9,
+                  letterSpacing: 1.5,
+                  background: "rgba(20,80,40,0.35)",
+                  border: "1px solid #3aaf6a",
+                  color: "#9bf0c0",
+                  borderRadius: 2,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                🧬 OPEN HYPOTHESIS TESTER →
+              </button>
+            )}
           </div>
           {onOpenAdvanced && (
             <button
