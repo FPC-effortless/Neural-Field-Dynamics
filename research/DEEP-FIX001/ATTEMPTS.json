@@ -1,0 +1,5 @@
+{
+  "baseline": "Original-source statistics read regression failed as expected.",
+  "corrected_execution": "All assertions passed before first report write, which failed because output directory was missing. Test harness now creates the destination directory; a fresh full execution passed and saved RESULTS.json.",
+  "qualification": "original runs and failed write retained; no result invented from a partial run"
+}
