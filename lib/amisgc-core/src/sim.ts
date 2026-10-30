@@ -914,6 +914,7 @@ export function simTick(sim: SimState, ctx: SimContext): number {
   sim.totalPruned += pruned;
   sim.totalGrown += grown;
   sim.totalConns = totalW;
+  deriveStats(sim, ctx, true); // exactly one statistics/history update per dynamics tick
   return firedNow.size;
 }
 
@@ -922,6 +923,17 @@ const CONV_THRESH = 0.002;
 const WIN_SAMPLES = 10;
 
 export function calcStats(sim: SimState, ctx: SimContext): Stats {
+  // Reporting must not advance learning, convergence windows or gate duration.
+  // structuredClone preserves the intentional Infinity normalization sentinels.
+  return deriveStats(structuredClone(sim), ctx, false);
+}
+
+function deriveStats(sim: SimState, ctx: SimContext, advance: boolean): Stats {
+  const sample = (buffer: ReturnType<typeof mkNB>, value: number): number => {
+    if (advance) return nbPush(buffer, value);
+    const v = Number.isFinite(value) ? value : 0;
+    return buffer.hi > buffer.lo ? (v - buffer.lo) / (buffer.hi - buffer.lo) : 0.5;
+  };
   const P = ctx.P;
   const N = P.N;
   const B = P.B;
@@ -956,17 +968,17 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
   const SE = atpSp > 0 && tW > 0 ? dI / (tW * 0.01 + atpSp * 0.001) : 0;
   const FS = (counts["healthy"] as number) / N;
   const nb = sim.nb;
-  const nSE = nbPush(nb["se"] as ReturnType<typeof mkNB>, SE);
-  const nCR = nbPush(nb["cr"] as ReturnType<typeof mkNB>, sim.networkCR);
+  const nSE = sample(nb["se"] as ReturnType<typeof mkNB>, SE);
+  const nCR = sample(nb["cr"] as ReturnType<typeof mkNB>, sim.networkCR);
   const nATS =
-    sim.ats != null ? nbPush(nb["ats"] as ReturnType<typeof mkNB>, sim.ats) : nSE;
+    sim.ats != null ? sample(nb["ats"] as ReturnType<typeof mkNB>, sim.ats) : nSE;
   const C_chollet = Math.cbrt(nSE * nCR * nATS);
-  const nCoh = nbPush(nb["coh"] as ReturnType<typeof mkNB>, sim.networkCoh);
-  const nSself = nbPush(
+  const nCoh = sample(nb["coh"] as ReturnType<typeof mkNB>, sim.networkCoh);
+  const nSself = sample(
     nb["sself"] as ReturnType<typeof mkNB>,
     sim.networkSself
   );
-  const nAgency = nbPush(
+  const nAgency = sample(
     nb["agency"] as ReturnType<typeof mkNB>,
     sim.networkAgency
   );
@@ -976,9 +988,9 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
       Math.max(nAgency, 0.01)
   );
   const J_score = Math.sqrt(C_chollet * C_bach);
-  nbPush(nb["J"] as ReturnType<typeof mkNB>, J_score);
-  const nPhi = nbPush(nb["phi"] as ReturnType<typeof mkNB>, sim.networkPhi);
-  const nSC = nbPush(nb["sc"] as ReturnType<typeof mkNB>, sim.networkSC);
+  sample(nb["J"] as ReturnType<typeof mkNB>, J_score);
+  const nPhi = sample(nb["phi"] as ReturnType<typeof mkNB>, sim.networkPhi);
+  const nSC = sample(nb["sc"] as ReturnType<typeof mkNB>, sim.networkSC);
   const D_score = clamp(vS / N - 0.4 + sim.networkIC * 0.3);
   const J_star = Math.pow(
     Math.max(nPhi, 0.01) *
@@ -988,7 +1000,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
       Math.max(D_score, 0.01),
     0.2
   );
-  nbPush(nb["Jstar"] as ReturnType<typeof mkNB>, J_star);
+  sample(nb["Jstar"] as ReturnType<typeof mkNB>, J_star);
   sim.J_score = J_score;
   sim.J_star = J_star;
   sim.C_chollet = C_chollet;
@@ -997,7 +1009,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     J_star *
     (1 + sim.networkCtrl * P.LAMBDA_B) *
     (1 + sim.networkSbody * P.LAMBDA_B);
-  nbPush(nb["jemb"] as ReturnType<typeof mkNB>, J_emb);
+  sample(nb["jemb"] as ReturnType<typeof mkNB>, J_emb);
   sim.J_emb = J_emb;
 
   // v12 revision — compute predictive usefulness PU = I(G_t ; envBit_{t+PU_LAG})
@@ -1061,7 +1073,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     sim.networkPhi > 0.05 && sim.networkPU > 0.1 && sim.networkSC > 0.1;
   if (gateOpen) {
     sim.existenceGate = 1;
-    sim.gateStreak += 1;
+    if (advance) sim.gateStreak += 1;
     sim.failureReason = "";
   } else {
     sim.existenceGate = 0;
@@ -1131,7 +1143,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     sim.phaseTimeCOG = sim.t;
   if (phaseRegion === "PREDICTIVE" && sim.phaseTimePRED < 0)
     sim.phaseTimePRED = sim.t;
-  if (!sim.converged && sim.t > BURNIN) {
+  if (advance && !sim.converged && sim.t > BURNIN) {
     sim.Jstar_history.push(J_star);
     if (sim.Jstar_history.length > 12) sim.Jstar_history.shift();
     if (sim.Jstar_history.length >= 8) {
@@ -1146,6 +1158,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
   }
   const wa = (arr: number[]) =>
     arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  if (advance) {
   sim.win_Jstar.push(J_star);
   sim.win_Phi.push(sim.networkPhi);
   sim.win_SC.push(sim.networkSC);
@@ -1160,6 +1173,7 @@ export function calcStats(sim: SimState, ctx: SimContext): Stats {
     sim.win_Ctrl.shift();
   }
   if (sim.win_IC.length > WIN_SAMPLES) sim.win_IC.shift();
+  }
   const avgV = vS / N;
   if (avgV > 0.5 && sim.networkIC > 0.1 && sim.ats && sim.ats > 1.5 && B > 1)
     sim.h16Confirmed = true;
