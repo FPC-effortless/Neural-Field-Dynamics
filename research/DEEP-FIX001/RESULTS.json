@@ -1,0 +1,32 @@
+{
+  "study": "DEEP-FIX001",
+  "kind": "constructed_regression_not_capability",
+  "checks": 3,
+  "rows": [
+    {
+      "seed": 101,
+      "ticks": 2400,
+      "entireStateEqual": true,
+      "statsEqual": true,
+      "gateStreak": 0
+    },
+    {
+      "seed": 202,
+      "ticks": 2400,
+      "entireStateEqual": true,
+      "statsEqual": true,
+      "gateStreak": 0
+    },
+    {
+      "seed": 303,
+      "ticks": 2400,
+      "entireStateEqual": true,
+      "statsEqual": true,
+      "gateStreak": 0
+    }
+  ],
+  "seconds": 29.293208002,
+  "node": "v24.22.1",
+  "optimizerSteps": 0,
+  "gpuMinutes": 0
+}

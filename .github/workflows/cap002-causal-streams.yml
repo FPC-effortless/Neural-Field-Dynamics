@@ -1,0 +1,46 @@
+name: CAP002 causal stream capability
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - tests/cap002-causal-streams.mjs
+      - .github/workflows/cap002-causal-streams.yml
+permissions:
+  contents: read
+concurrency:
+  group: cap002-nfd-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  causal-streams:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Existing observational-statistics regressions
+        run: node tests/statistics-regression.mjs lib/amisgc-core/src ci-artifacts/regression.json
+      - name: Actual native-field causal stream and readout battery
+        run: |
+          set -o pipefail
+          mkdir -p ci-artifacts/cap002
+          node --check tests/cap002-causal-streams.mjs
+          node tests/cap002-causal-streams.mjs ci-artifacts/cap002 2>&1 | tee ci-artifacts/cap002/RUN.log
+      - name: Preserve source receipt
+        if: always()
+        run: |
+          mkdir -p ci-artifacts/cap002
+          git rev-parse HEAD > ci-artifacts/cap002/COMMIT.txt
+          node --version > ci-artifacts/cap002/NODE.txt
+          git archive HEAD lib/amisgc-core/src tests/cap002-causal-streams.mjs tests/statistics-regression.mjs AGENTS.md > ci-artifacts/cap002/source.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cap002-nfd-causal-streams-${{ github.run_attempt }}
+          path: ci-artifacts/
+          retention-days: 90
+          if-no-files-found: error
