@@ -1,0 +1,290 @@
+[
+  {
+    "family": "NFD",
+    "seed": 101,
+    "plasticity_disabled": false,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.693146760691243,
+    "test_accuracy": 0.501,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 1.0234402129999998,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.5001000837356787,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.5001014893111908,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.5001016702903037,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5001018191249116,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.5001041950352604,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  },
+  {
+    "family": "NFD",
+    "seed": 101,
+    "plasticity_disabled": true,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.6931474615322175,
+    "test_accuracy": 0.503,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 0.6266577639999996,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.500025183433074,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.5000193846972466,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.5000216546616206,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5000198922910672,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.5000196542847278,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  },
+  {
+    "family": "NFD",
+    "seed": 202,
+    "plasticity_disabled": false,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.6931468653415739,
+    "test_accuracy": 0.501,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 0.6397376810000005,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.5000617104614656,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.5000614297391668,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.5000615384508208,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5000622247439619,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.5000613397522781,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  },
+  {
+    "family": "NFD",
+    "seed": 202,
+    "plasticity_disabled": true,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.6931466392809333,
+    "test_accuracy": 0.501,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 0.5845692140000001,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.5000761067233683,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.5000729303103387,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.5000667451005408,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5000671234040237,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.5000725995799051,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  },
+  {
+    "family": "NFD",
+    "seed": 303,
+    "plasticity_disabled": false,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.6931470332452074,
+    "test_accuracy": 0.501,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 0.6086240470000003,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.5000392860671802,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.5000393219047397,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.5000407587220262,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5000399766962137,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.5000399842559203,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  },
+  {
+    "family": "NFD",
+    "seed": 303,
+    "plasticity_disabled": true,
+    "metric_read_pure": true,
+    "rewire_effective": true,
+    "ATS_before_novel": null,
+    "external_readout": "added logistic readout; frozen after tick 1500; target observed only after prediction",
+    "train_ticks": 1500,
+    "test_ticks": 1000,
+    "test_nll": 0.6931472623874256,
+    "test_accuracy": 0.488,
+    "history_only_nll": 0.45440554306627295,
+    "history_only_accuracy": 0.723,
+    "seconds": 0.6436881279999997,
+    "first_test_predictions": [
+      {
+        "t": 1500,
+        "p": 0.5000345154939161,
+        "history_p": 0.7628469897161644,
+        "y": 1
+      },
+      {
+        "t": 1501,
+        "p": 0.500033387086775,
+        "history_p": 0.10622079963277273,
+        "y": 0
+      },
+      {
+        "t": 1502,
+        "p": 0.500019428542384,
+        "history_p": 0.8935032573253849,
+        "y": 1
+      },
+      {
+        "t": 1503,
+        "p": 0.5000298954032392,
+        "history_p": 0.23540572324858766,
+        "y": 0
+      },
+      {
+        "t": 1504,
+        "p": 0.49999997508473093,
+        "history_p": 0.23639828388338832,
+        "y": 0
+      }
+    ]
+  }
+]
