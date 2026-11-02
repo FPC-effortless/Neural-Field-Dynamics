@@ -259,12 +259,20 @@ export function attractorDistance(
 // PRNG for reproducibility
 export function mulberry32(seed: number) {
   let t = seed >>> 0;
-  return function () {
+  const next = function () {
     t = (t + 0x6d2b79f5) | 0;
     let r = Math.imul(t ^ (t >>> 15), 1 | t);
     r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
     return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
+  next.getState = () => t >>> 0;
+  next.setState = (state: number): void => {
+    if (!Number.isInteger(state) || state < 0 || state > 0xffffffff) {
+      throw new TypeError("mulberry32 state must be a uint32");
+    }
+    t = state | 0;
+  };
+  return next;
 }
 
 export function gaussian(rng: () => number = Math.random): number {

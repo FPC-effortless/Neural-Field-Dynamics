@@ -1,0 +1,40 @@
+{
+  "schema": "nfd.native-checkpoint-test.v1",
+  "node": "v24.22.1",
+  "baseline_ref": "0c507d460b844bb4e317c1bedf99dfab2d787ab8",
+  "rows": [
+    {
+      "seed": 20111,
+      "forward_ticks": 65,
+      "immutable_base_parity": true,
+      "resume_ticks": 45,
+      "native_task_switches": 9,
+      "child_process_exact": true,
+      "sim_only_negative_diverged": true
+    },
+    {
+      "seed": 20122,
+      "forward_ticks": 65,
+      "immutable_base_parity": true,
+      "resume_ticks": 45,
+      "native_task_switches": 9,
+      "child_process_exact": true,
+      "sim_only_negative_diverged": true
+    },
+    {
+      "seed": 20133,
+      "forward_ticks": 65,
+      "immutable_base_parity": true,
+      "resume_ticks": 45,
+      "native_task_switches": 9,
+      "child_process_exact": true,
+      "sim_only_negative_diverged": true
+    }
+  ],
+  "rejected_invalid_envelopes": 12,
+  "actual_source_mutation_child_rejected": true,
+  "zero_tick_nonfinite_preserved": true,
+  "model_fits": 0,
+  "optimizer_steps": 0,
+  "scope": "trusted-local engineering verification; not model capability or training"
+}

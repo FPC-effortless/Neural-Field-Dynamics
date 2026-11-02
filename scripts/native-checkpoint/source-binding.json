@@ -1,0 +1,25 @@
+{
+  "schema": "nfd.native-integration-source-binding.v1",
+  "repository": "FPC-effortless/Neural-Field-Dynamics",
+  "base": "0c507d460b844bb4e317c1bedf99dfab2d787ab8",
+  "node": "v24.22.1",
+  "base_sha256": {
+    "lib/amisgc-core/src/math.ts": "f5d0af035c2fb6fbdb403dc98a4fea3989e66b47d3666fcd56743436c8070ef8",
+    "lib/amisgc-core/src/params.ts": "f9297e2bd9627a89ca70e17e6eddfb9a2dc2774a48bbdfb39dc5840b398624cc",
+    "lib/amisgc-core/src/sim.ts": "0e3acf65ed1a460d90a378527b334475c806d10032ed05f42429f7a48874dafc",
+    "lib/amisgc-core/src/tasks.ts": "dab66e05ba4dfc2a8b8ac9ebc4dfa9147c6432657b894e7abdc8a478c653bb0a"
+  },
+  "candidate_sha256": {
+    "lib/amisgc-core/src/math.ts": "1f85bb3034feaf3150528e0287b6eca4d8ebf38a817968e2452aaa0d035bb4d0",
+    "lib/amisgc-core/src/params.ts": "f9297e2bd9627a89ca70e17e6eddfb9a2dc2774a48bbdfb39dc5840b398624cc",
+    "lib/amisgc-core/src/sim.ts": "0e3acf65ed1a460d90a378527b334475c806d10032ed05f42429f7a48874dafc",
+    "lib/amisgc-core/src/tasks.ts": "dab66e05ba4dfc2a8b8ac9ebc4dfa9147c6432657b894e7abdc8a478c653bb0a"
+  },
+  "archive_parity": {
+    "result": "FAIL_RETAINED",
+    "first_divergence_tick": 1,
+    "cause": "ARCHPAR002 on/sim.js advances statistics/history inside simTick; native simTick does not. Native calcStats mutates history. No archived sim overwrite."
+  },
+  "model_fits": 0,
+  "optimizer_steps": 0
+}
